@@ -64,7 +64,10 @@ jobs:
       - name: Collect APK
         run: |
           mkdir -p dist
-          cp android/app/build/outputs/apk/release/app-release.apk "dist/DocVoice-android-v${{ steps.v.outputs.version }}.apk"
+          find android/app/build/outputs -type f | head -20
+          APK=$(find android/app/build/outputs -name '*.apk' | head -1)
+          [ -n "$APK" ] || { echo "::error::APK 를 찾지 못했습니다: $(find android/app/build/outputs -type f | head -10 | tr '\n' ' ')"; exit 1; }
+          cp "$APK" "dist/DocVoice-android-v${{ steps.v.outputs.version }}.apk"
           ls -la dist
       - uses: actions/upload-artifact@v4
         with:
