@@ -50,10 +50,17 @@ jobs:
           ls -la android/app/libs
       - name: Unit tests
         working-directory: android
-        run: gradle --no-daemon :app:testDebugUnitTest
+        run: gradle --no-daemon :app:testDebugUnitTest 2>&1 | tee ../gradle-test.log
       - name: Build release APK
         working-directory: android
-        run: gradle --no-daemon :app:assembleRelease
+        run: gradle --no-daemon :app:assembleRelease 2>&1 | tee ../gradle-build.log
+      - name: Report build errors
+        if: failure()
+        run: |
+          for f in gradle-test.log gradle-build.log; do
+            [ -f "$f" ] || continue
+            grep -E "^e: |error:|FAILED|What went wrong|Execution failed|> Could not|Unresolved|AAPT" -A1 "$f" | head -30 | while IFS= read -r line; do echo "::error::${line:0:900}"; done
+          done
       - name: Collect APK
         run: |
           mkdir -p dist
