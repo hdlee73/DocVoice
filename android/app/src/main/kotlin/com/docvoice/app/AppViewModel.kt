@@ -88,5 +88,38 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
         if (!JobHub.isRunning()) JobHub.state.value = JobState.Idle
     }
 
+    // ---- 녹음 ----
+    val rec = RecorderHub.state
+    var recFormat by mutableStateOf(prefs.getString("recFormat", "docx")!!)
+    var recDiarize by mutableStateOf(false)
+
+    fun startRecording() {
+        if (RecorderHub.isActive()) return
+        RecorderHub.reset()
+        RecorderHub.language = language
+        RecorderHub.sizeKey = size.name
+        save()
+        ContextCompat.startForegroundService(app, Intent(app, RecorderService::class.java).setAction(RecorderService.ACTION_START))
+    }
+
+    fun togglePause() {
+        app.startService(Intent(app, RecorderService::class.java).setAction(RecorderService.ACTION_PAUSE))
+    }
+
+    fun stopRecording() {
+        app.startService(Intent(app, RecorderService::class.java).setAction(RecorderService.ACTION_STOP))
+    }
+
+    fun newRecording() {
+        if (!RecorderHub.isActive()) RecorderHub.reset()
+    }
+
+    fun exportRecording() {
+        val wav = RecorderHub.state.value.wav
+        val title = wav?.name?.let { Storage.baseName(it) } ?: "녹음"
+        prefs.edit().putString("recFormat", recFormat).apply()
+        launch(JobRequest.RecExport(title, recFormat, recDiarize, gap.toDouble(), includeTime, showSpeaker && recDiarize))
+    }
+
     val formats get() = Exporter.FORMATS
 }

@@ -1,60 +1,74 @@
-"""안드로이드 적응형 아이콘 레이어 생성. 실행: python tools/make_android_icon.py"""
-import math
+"""안드로이드 적응형 아이콘 레이어 생성 (iOS 풍 블루 그라데이션 + 문서 + 음성 파형). 실행: python tools/make_android_icon.py"""
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter
 
 RES = Path(__file__).resolve().parent.parent / "android" / "app" / "src" / "main" / "res" / "drawable-nodpi"
+S = 1024
 SS = 2
-N = 1024 * SS
-LAV, MINT = (201, 184, 245), (168, 230, 207)
+N = S * SS
+TOP, BOTTOM = (88, 178, 255), (0, 98, 235)
+BAR_TOP, BAR_BOTTOM = (64, 156, 255), (0, 90, 220)
+BARS = [0.30, 0.55, 0.85, 0.50, 0.28]  # 파형 막대 상대 높이
 
 
-def content(mono=False):
-    """투명 배경 위에 문서 + 음파."""
+def doc_art(mono=False):
     k = SS
     img = Image.new("RGBA", (N, N), (0, 0, 0, 0))
-    x0, y0, x1, y1 = 215 * k, 200 * k, 585 * k, 824 * k
-    fold = 120 * k
+    x0, y0, x1, y1 = 262 * k, 150 * k, 762 * k, 874 * k
+    r = 70 * k
+    fold = 150 * k
     if not mono:
         sh = Image.new("RGBA", (N, N), (0, 0, 0, 0))
-        ImageDraw.Draw(sh).rounded_rectangle((x0 + 10 * k, y0 + 22 * k, x1 + 10 * k, y1 + 22 * k), radius=46 * k, fill=(120, 100, 180, 70))
-        img = Image.alpha_composite(img, sh.filter(ImageFilter.GaussianBlur(18 * k)))
+        ImageDraw.Draw(sh).rounded_rectangle((x0, y0 + 26 * k, x1, y1 + 26 * k), radius=r, fill=(0, 40, 120, 90))
+        img = Image.alpha_composite(img, sh.filter(ImageFilter.GaussianBlur(26 * k)))
     d = ImageDraw.Draw(img)
-    white = (255, 255, 255, 255)
-    d.rounded_rectangle((x0, y0, x1, y1), radius=46 * k, fill=white)
+    d.rounded_rectangle((x0, y0, x1, y1), radius=r, fill=(255, 255, 255, 255))
+    # 접힌 모서리
     if not mono:
-        d.polygon([(x1 - fold, y0), (x1, y0 + fold), (x1 - fold, y0 + fold)], fill=(233, 228, 250, 255))
-        d.polygon([(x1 - fold, y0 + 4 * k), (x1 - 4 * k, y0 + fold), (x1 - fold, y0 + fold)], fill=(226, 219, 248, 255))
-    colors = [(201, 184, 245), (255, 200, 221), (168, 230, 207), (201, 184, 245), (189, 224, 254)]
-    widths = [250, 250, 200, 250, 150]
-    for i, (c, w) in enumerate(zip(colors, widths)):
-        y = (330 + i * 85) * k
-        fill = (0, 0, 0, 0) if mono else c + (255,)
-        if mono:
-            # 투명하게 파내기
-            hole = Image.new("L", (N, N), 255)
-            ImageDraw.Draw(hole).rounded_rectangle((x0 + 55 * k, y, x0 + (55 + w) * k, y + 30 * k), radius=15 * k, fill=0)
-            img.putalpha(Image.composite(img.getchannel("A"), Image.new("L", (N, N), 0), hole))
-            d = ImageDraw.Draw(img)
-        else:
-            d.rounded_rectangle((x0 + 55 * k, y, x0 + (55 + w) * k, y + 30 * k), radius=15 * k, fill=fill)
-    cx, cy = 640 * k, 512 * k
-    for r, a in [(120, 255), (210, 215), (300, 170)]:
-        r *= k
-        w = 44 * k
-        al = 255 if mono else a
-        d.arc((cx - r, cy - r, cx + r, cy + r), start=-48, end=48, fill=(255, 255, 255, al), width=w)
-        for ang in (-48, 48):
-            ex = cx + (r - w / 2) * math.cos(math.radians(ang))
-            ey = cy + (r - w / 2) * math.sin(math.radians(ang))
-            d.ellipse((ex - w / 2, ey - w / 2, ex + w / 2, ey + w / 2), fill=(255, 255, 255, al))
-    d.ellipse((cx - 32 * k, cy - 32 * k, cx + 32 * k, cy + 32 * k), fill=white)
+        d.polygon([(x1 - fold, y0), (x1, y0 + fold), (x1 - fold, y0 + fold)], fill=(222, 232, 250, 255))
+    # 파형 막대
+    bar_w = 46 * k
+    gap = 34 * k
+    total = len(BARS) * bar_w + (len(BARS) - 1) * gap
+    bx = (x0 + x1) / 2 - total / 2
+    cy = (y0 + y1) / 2 + 70 * k
+    maxh = 400 * k
+    if mono:
+        hole = Image.new("L", (N, N), 255)
+        hd = ImageDraw.Draw(hole)
+        for i, h in enumerate(BARS):
+            hh = maxh * h
+            hd.rounded_rectangle((bx + i * (bar_w + gap), cy - hh / 2, bx + i * (bar_w + gap) + bar_w, cy + hh / 2), radius=bar_w / 2, fill=0)
+        img.putalpha(Image.composite(img.getchannel("A"), Image.new("L", (N, N), 0), hole))
+    else:
+        for i, h in enumerate(BARS):
+            hh = maxh * h
+            bar = Image.new("RGBA", (int(bar_w), int(hh)), (0, 0, 0, 0))
+            bp = bar.load()
+            for yy in range(int(hh)):
+                t = yy / max(1, hh - 1)
+                c = tuple(int(BAR_TOP[j] + (BAR_BOTTOM[j] - BAR_TOP[j]) * t) for j in range(3)) + (255,)
+                for xx in range(int(bar_w)):
+                    bp[xx, yy] = c
+            m = Image.new("L", bar.size, 0)
+            ImageDraw.Draw(m).rounded_rectangle((0, 0, bar.size[0] - 1, bar.size[1] - 1), radius=bar_w // 2, fill=255)
+            img.paste(bar, (int(bx + i * (bar_w + gap)), int(cy - hh / 2)), m)
+    return img
+
+
+def gradient(size):
+    img = Image.new("RGB", (size, size))
+    px = img.load()
+    for y in range(size):
+        t = y / (size - 1)
+        c = tuple(int(TOP[i] + (BOTTOM[i] - TOP[i]) * t) for i in range(3))
+        for x in range(size):
+            px[x, y] = c
     return img
 
 
 def layer(art, size=432, frac=0.60):
-    box = art.getbbox()
-    art = art.crop(box)
+    art = art.crop(art.getbbox())
     s = size * frac / max(art.size)
     art = art.resize((max(1, int(art.width * s)), max(1, int(art.height * s))), Image.LANCZOS)
     out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
@@ -62,24 +76,25 @@ def layer(art, size=432, frac=0.60):
     return out
 
 
-def gradient(size):
-    img = Image.new("RGB", (size, size))
-    px = img.load()
-    for y in range(size):
-        for x in range(size):
-            t = (x + y) / (2 * size)
-            px[x, y] = tuple(int(LAV[i] + (MINT[i] - LAV[i]) * t) for i in range(3))
-    return img
-
-
 def main():
     RES.mkdir(parents=True, exist_ok=True)
     gradient(432).save(RES / "ic_launcher_background.png")
-    layer(content()).save(RES / "ic_launcher_foreground.png")
-    layer(content(mono=True)).save(RES / "ic_launcher_monochrome.png")
-    # 앱 내 로고 (둥근 사각형 아이콘 그대로)
-    src = Image.open(Path(__file__).resolve().parent.parent / "docvoice" / "assets" / "icon.png").convert("RGBA")
-    src.resize((256, 256), Image.LANCZOS).save(RES / "app_logo.png")
+    layer(doc_art()).save(RES / "ic_launcher_foreground.png")
+    layer(doc_art(mono=True)).save(RES / "ic_launcher_monochrome.png")
+    # 정사각 로고 (squircle)
+    big = gradient(1024).convert("RGBA")
+    mask = Image.new("L", (1024, 1024), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, 1023, 1023), radius=230, fill=255)
+    logo = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+    logo.paste(big, (0, 0), mask)
+    art = doc_art().resize((1024, 1024), Image.LANCZOS)
+    box = art.getbbox()
+    a = art.crop(box)
+    s = 1024 * 0.60 / max(a.size)
+    a = a.resize((int(a.width * s), int(a.height * s)), Image.LANCZOS)
+    logo.alpha_composite(a, ((1024 - a.width) // 2, (1024 - a.height) // 2))
+    logo.save(RES / "app_logo.png")
+    logo.resize((512, 512), Image.LANCZOS).save(Path(__file__).resolve().parent / "android_icon_512.png")
     print(sorted(p.name for p in RES.iterdir()))
 
 

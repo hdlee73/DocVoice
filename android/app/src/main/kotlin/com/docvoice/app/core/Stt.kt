@@ -47,38 +47,8 @@ object Stt {
         if (opts.diarize) store.ensureDiar(isActive) { m, f -> onStage(m, f) }
 
         // 2) 받아쓰기
-        val wf = store.whisper(opts.size)
-        val recognizer = OfflineRecognizer(
-            config = OfflineRecognizerConfig(
-                modelConfig = OfflineModelConfig(
-                    whisper = OfflineWhisperModelConfig(
-                        encoder = wf.encoder.path,
-                        decoder = wf.decoder.path,
-                        language = opts.language,
-                        task = "transcribe",
-                        tailPaddings = 1000,
-                    ),
-                    tokens = wf.tokens.path,
-                    numThreads = threads,
-                    provider = "cpu",
-                ),
-            )
-        )
-        val vad = Vad(
-            config = VadModelConfig(
-                sileroVadModelConfig = SileroVadModelConfig(
-                    model = store.vadFile.path,
-                    threshold = 0.5f,
-                    minSilenceDuration = 0.4f,
-                    minSpeechDuration = 0.25f,
-                    windowSize = 512,
-                    maxSpeechDuration = 25f,
-                ),
-                sampleRate = sr,
-                numThreads = 1,
-                provider = "cpu",
-            )
-        )
+        val recognizer = newRecognizer(store, opts, threads)
+        val vad = newVad(store)
         val segments = ArrayList<Segment>()
         try {
             val total = pcm.size
@@ -86,19 +56,7 @@ object Stt {
                 while (!vad.empty()) {
                     val seg = vad.front()
                     vad.pop()
-                    val start = seg.start / sr.toDouble()
-                    val dur = seg.samples.size / sr.toDouble()
-                    val stream = recognizer.createStream()
-                    try {
-                        stream.acceptWaveform(seg.samples, sr)
-                        recognizer.decode(stream)
-                        val text = recognizer.getResult(stream).text.trim()
-                        if (text.isNotEmpty() && Segmenter.englishWordCount(text) + (if (Segmenter.hasHangul(text)) 1 else 0) > 0) {
-                            segments.add(Segment(start, start + dur, text))
-                        }
-                    } finally {
-                        stream.release()
-                    }
+                    decodeSegment(recognizer, seg.samples, seg.start)?.let { segments.add(it) }
                 }
             }
             val window = 1600
@@ -142,7 +100,61 @@ object Stt {
         return SttResult(segments, turns, note)
     }
 
-    private fun diarize(store: ModelStore, pcm: PcmBuffer, threads: Int): List<Triple<Double, Double, Int>> {
+    fun newRecognizer(store: ModelStore, opts: SttOptions, threads: Int = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)): OfflineRecognizer {
+        val wf = store.whisper(opts.size)
+        return OfflineRecognizer(
+            config = OfflineRecognizerConfig(
+                modelConfig = OfflineModelConfig(
+                    whisper = OfflineWhisperModelConfig(
+                        encoder = wf.encoder.path,
+                        decoder = wf.decoder.path,
+                        language = opts.language,
+                        task = "transcribe",
+                        tailPaddings = 1000,
+                    ),
+                    tokens = wf.tokens.path,
+                    numThreads = threads,
+                    provider = "cpu",
+                ),
+            )
+        )
+    }
+
+    fun newVad(store: ModelStore): Vad = Vad(
+        config = VadModelConfig(
+            sileroVadModelConfig = SileroVadModelConfig(
+                model = store.vadFile.path,
+                threshold = 0.5f,
+                minSilenceDuration = 0.4f,
+                minSpeechDuration = 0.25f,
+                windowSize = 512,
+                maxSpeechDuration = 25f,
+            ),
+            sampleRate = AudioDecoder.SAMPLE_RATE,
+            numThreads = 1,
+            provider = "cpu",
+        )
+    )
+
+    /** VAD 가 잘라낸 한 구간을 Whisper 로 인식. startSample 은 16kHz 기준 샘플 위치. */
+    fun decodeSegment(recognizer: OfflineRecognizer, samples: FloatArray, startSample: Int): Segment? {
+        val sr = AudioDecoder.SAMPLE_RATE
+        val start = startSample / sr.toDouble()
+        val dur = samples.size / sr.toDouble()
+        val stream = recognizer.createStream()
+        try {
+            stream.acceptWaveform(samples, sr)
+            recognizer.decode(stream)
+            val text = recognizer.getResult(stream).text.trim()
+            if (text.isEmpty()) return null
+            if (Segmenter.englishWordCount(text) + (if (Segmenter.hasHangul(text)) 1 else 0) == 0) return null
+            return Segment(start, start + dur, text)
+        } finally {
+            stream.release()
+        }
+    }
+
+    fun diarize(store: ModelStore, pcm: PcmBuffer, threads: Int): List<Triple<Double, Double, Int>> {
         val sd = OfflineSpeakerDiarization(
             config = OfflineSpeakerDiarizationConfig(
                 segmentation = OfflineSpeakerSegmentationModelConfig(

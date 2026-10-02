@@ -56,7 +56,7 @@ class JobService : Service() {
         }
         JobHub.pending = null
         ensureChannel()
-        val title = if (req is JobRequest.Tts) "문서 → 음성" else "음성 → 문서"
+        val title = when (req) { is JobRequest.Tts -> "문서 → 음성"; is JobRequest.Stt -> "음성 → 문서"; is JobRequest.RecExport -> "녹음 → 문서" }
         startForeground(NOTIF_ID, buildNotification(title, "준비 중", null), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DocVoice:job").apply { acquire(3 * 60 * 60 * 1000L) }
@@ -67,6 +67,7 @@ class JobService : Service() {
                 when (req) {
                     is JobRequest.Tts -> runTts(req, title)
                     is JobRequest.Stt -> runStt(req, title)
+                    is JobRequest.RecExport -> runRecExport(req, title)
                 }
             } catch (e: CancellationException) {
                 JobHub.state.value = JobState.Failed("작업을 취소했습니다.")
@@ -136,24 +137,58 @@ class JobService : Service() {
             Stt.transcribe(store, pcm, req.opts, active) { stage, f -> progress(title, stage, f) }
         }
         if (result.segments.isEmpty()) throw ExtractException("음성에서 인식된 말이 없습니다.")
-        progress(title, "문서로 정리하는 중", null)
-        val (sentences, paragraphs) = Stt.toDocument(result, req.gap)
-        val speakers = req.showSpeaker && result.turns.isNotEmpty()
-        val docTitle = Storage.baseName(req.audio.name)
-        val bytes = withContext(Dispatchers.IO) {
-            when (req.format) {
-                "xlsx" -> Exporter.xlsx(sentences, req.includeTime, speakers)
-                "docx" -> Exporter.docx(paragraphs, docTitle, req.includeTime, speakers)
-                "pdf" -> PdfExporter.export(this@JobService, paragraphs, docTitle, req.includeTime, speakers)
-                else -> Exporter.txt(paragraphs, req.includeTime, speakers)
+        finishDocument(title, result, req.format, Storage.baseName(req.audio.name), req.gap, req.includeTime, req.showSpeaker)
+    }
+
+    private suspend fun runRecExport(req: JobRequest.RecExport, title: String) {
+        val pcm = RecorderHub.pcm ?: throw ExtractException("녹음 데이터가 없습니다.")
+        val segs = RecorderHub.state.value.segments
+        if (segs.isEmpty()) throw ExtractException("인식된 말이 없습니다.")
+        val store = ModelStore(this)
+        var turns: List<Triple<Double, Double, Int>> = emptyList()
+        var note: String? = null
+        if (req.diarize) {
+            if (pcm.seconds > Stt.MAX_DIARIZE_SECONDS) {
+                note = "녹음이 ${Stt.MAX_DIARIZE_SECONDS / 60}분보다 길어 화자 구분은 건너뛰었습니다."
+            } else {
+                val job = currentCoroutineContext()[Job]!!
+                try {
+                    withContext(Dispatchers.Default) {
+                        store.ensureDiar({ job.isActive }) { m, f -> progress(title, m, f) }
+                        progress(title, "화자 구분 중", null)
+                        turns = Stt.diarize(store, pcm, Runtime.getRuntime().availableProcessors().coerceIn(2, 4))
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    note = "화자 구분에 실패해 화자 정보 없이 저장합니다. (${e.message})"
+                }
             }
         }
-        val name = "$docTitle.${req.format}"
+        finishDocument(title, com.docvoice.app.core.SttResult(segs, turns, note), req.format, req.title, req.gap, req.includeTime, req.showSpeaker)
+    }
+
+    private suspend fun finishDocument(
+        title: String, result: com.docvoice.app.core.SttResult, format: String, docTitle: String,
+        gap: Double, includeTime: Boolean, showSpeakerReq: Boolean,
+    ) {
+        progress(title, "문서로 정리하는 중", null)
+        val (sentences, paragraphs) = Stt.toDocument(result, gap)
+        val speakers = showSpeakerReq && result.turns.isNotEmpty()
+        val bytes = withContext(Dispatchers.IO) {
+            when (format) {
+                "xlsx" -> Exporter.xlsx(sentences, includeTime, speakers)
+                "docx" -> Exporter.docx(paragraphs, docTitle, includeTime, speakers)
+                "pdf" -> PdfExporter.export(this@JobService, paragraphs, docTitle, includeTime, speakers)
+                else -> Exporter.txt(paragraphs, includeTime, speakers)
+            }
+        }
+        val name = "$docTitle.$format"
         val uri = withContext(Dispatchers.IO) { Storage.saveToDownloads(this@JobService, name, bytes) }
         val n = result.turns.map { it.third }.distinct().size
         val info = buildString {
             append("${sentences.size}문장")
-            if (req.format != "xlsx") append(" · ${paragraphs.size}문단")
+            if (format != "xlsx") append(" · ${paragraphs.size}문단")
             if (n > 0) append(" · 화자 ${n}명")
         }
         JobHub.state.value = JobState.Done(

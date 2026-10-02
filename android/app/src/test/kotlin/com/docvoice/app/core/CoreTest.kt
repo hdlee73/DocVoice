@@ -153,4 +153,12 @@ class CoreTest {
         assertTrue(out.size.toString(), out.size in 15990..16000)
         assertTrue(out.all { it.toInt() == 1000 })
     }
+
+    @Test fun wavHeader() {
+        val w = Wav.encode(shortArrayOf(1, -2, 3), 3)
+        assertEquals(44 + 6, w.size)
+        assertEquals("RIFF", String(w, 0, 4))
+        assertEquals("WAVE", String(w, 8, 4))
+        assertEquals(6, java.nio.ByteBuffer.wrap(w, 40, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN).int)
+    }
 }

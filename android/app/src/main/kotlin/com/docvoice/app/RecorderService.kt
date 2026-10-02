@@ -1,0 +1,235 @@
+package com.docvoice.app
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import android.os.IBinder
+import android.os.PowerManager
+import androidx.core.app.NotificationCompat
+import com.docvoice.app.core.AudioDecoder
+import com.docvoice.app.core.ModelStore
+import com.docvoice.app.core.PcmBuffer
+import com.docvoice.app.core.Segment
+import com.docvoice.app.core.Storage
+import com.docvoice.app.core.Stt
+import com.docvoice.app.core.SttOptions
+import com.docvoice.app.core.Wav
+import com.docvoice.app.core.WhisperSize
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.math.sqrt
+
+/** 마이크 녹음 + 실시간 받아쓰기 (Silero VAD 로 말 구간을 잘라 Whisper 로 바로 인식). */
+class RecorderService : Service() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var wake: PowerManager.WakeLock? = null
+
+    private class Speech(val samples: FloatArray, val start: Int)
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_STOP -> { RecorderHub.stopRequested.set(true); return START_NOT_STICKY }
+            ACTION_PAUSE -> { RecorderHub.paused.set(!RecorderHub.paused.get()); return START_NOT_STICKY }
+            ACTION_START -> {}
+            else -> return START_NOT_STICKY
+        }
+        if (RecorderHub.job?.isActive == true) return START_NOT_STICKY
+        ensureChannel()
+        startForeground(NOTIF_ID, notification("준비 중"), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DocVoice:rec").apply { acquire(4 * 60 * 60 * 1000L) }
+        RecorderHub.stopRequested.set(false)
+        RecorderHub.paused.set(false)
+        RecorderHub.pcm = null
+        RecorderHub.state.value = RecState(phase = RecPhase.Preparing, message = "준비 중")
+
+        RecorderHub.job = scope.launch {
+            try {
+                record()
+            } catch (e: CancellationException) {
+                RecorderHub.upd { copy(phase = RecPhase.Failed, message = "녹음을 취소했습니다.") }
+            } catch (e: SecurityException) {
+                RecorderHub.state.value = RecState(phase = RecPhase.Failed, message = "마이크 권한이 필요합니다.")
+            } catch (e: Throwable) {
+                RecorderHub.upd { copy(
+                    phase = RecPhase.Failed, message = "녹음 중 오류가 발생했습니다: ${e.message ?: e.javaClass.simpleName}",
+                ) }
+            } finally {
+                wake?.let { if (it.isHeld) it.release() }
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+        }
+        return START_NOT_STICKY
+    }
+
+    override fun onDestroy() {
+        scope.coroutineContext[Job]?.cancel()
+        wake?.let { if (it.isHeld) it.release() }
+        super.onDestroy()
+    }
+
+    private suspend fun record() {
+        val sr = AudioDecoder.SAMPLE_RATE
+        val store = ModelStore(this)
+        val size = runCatching { WhisperSize.valueOf(RecorderHub.sizeKey) }.getOrDefault(WhisperSize.SMALL)
+        val opts = SttOptions(RecorderHub.language, size, false)
+        val alive = { scope.isActive && !RecorderHub.stopRequested.get() }
+
+        withContext(Dispatchers.IO) {
+            store.ensureVad(alive) { m, f -> prep(m, f) }
+            store.ensureWhisper(size, alive) { m, f -> prep(m, f) }
+        }
+        if (RecorderHub.stopRequested.get()) { RecorderHub.reset(); return }
+        prep("음성 인식 준비 중", null)
+        val recognizer = Stt.newRecognizer(store, opts)
+        val vad = Stt.newVad(store)
+
+        val pcm = PcmBuffer(sr * 60 * 5)
+        RecorderHub.pcm = pcm
+        val queue = Channel<Speech>(Channel.UNLIMITED)
+        val segments = ArrayList<Segment>()
+
+        val worker = scope.launch(Dispatchers.Default) {
+            for (sp in queue) {
+                val seg = Stt.decodeSegment(recognizer, sp.samples, sp.start) ?: continue
+                segments.add(seg)
+                RecorderHub.upd { copy(segments = segments.toList()) }
+            }
+        }
+
+        val minBuf = AudioRecord.getMinBufferSize(sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        val rec = AudioRecord(
+            MediaRecorder.AudioSource.MIC, sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+            maxOf(minBuf, sr * 2),
+        )
+        if (rec.state != AudioRecord.STATE_INITIALIZED) {
+            rec.release(); vad.release(); queue.close(); worker.cancel(); recognizer.release()
+            throw IllegalStateException("마이크를 시작할 수 없습니다.")
+        }
+        try {
+            rec.startRecording()
+            RecorderHub.upd { copy(phase = RecPhase.Recording, message = null, fraction = null) }
+            val buf = ShortArray(1600)
+            var lastNotify = 0L
+            withContext(Dispatchers.IO) {
+                while (!RecorderHub.stopRequested.get() && scope.isActive) {
+                    val n = rec.read(buf, 0, buf.size)
+                    if (n <= 0) continue
+                    val paused = RecorderHub.paused.get()
+                    if (paused) {
+                        RecorderHub.upd { copy(phase = RecPhase.Paused, level = 0f, speaking = false) }
+                        continue
+                    }
+                    var sum = 0.0
+                    val f = FloatArray(n)
+                    for (i in 0 until n) {
+                        pcm.add(buf[i])
+                        f[i] = buf[i] / 32768f
+                        sum += f[i] * f[i]
+                    }
+                    vad.acceptWaveform(f)
+                    while (!vad.empty()) {
+                        val s = vad.front(); vad.pop()
+                        queue.trySend(Speech(s.samples, s.start))
+                    }
+                    val rms = sqrt(sum / n).toFloat()
+                    RecorderHub.upd { copy(
+                        phase = RecPhase.Recording,
+                        seconds = pcm.seconds,
+                        level = (rms * 6f).coerceIn(0f, 1f),
+                        speaking = vad.isSpeechDetected(),
+                    ) }
+                    val now = System.currentTimeMillis()
+                    if (now - lastNotify > 1000) {
+                        lastNotify = now
+                        getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification(fmt(pcm.seconds)))
+                    }
+                }
+            }
+        } finally {
+            try { rec.stop() } catch (_: Exception) {}
+            rec.release()
+        }
+
+        RecorderHub.upd { copy(phase = RecPhase.Finishing, message = "마무리 인식 중", level = 0f, speaking = false) }
+        vad.flush()
+        while (!vad.empty()) {
+            val s = vad.front(); vad.pop()
+            queue.trySend(Speech(s.samples, s.start))
+        }
+        queue.close()
+        worker.join()
+        vad.release()
+        recognizer.release()
+
+        // 녹음 원본(WAV) 저장
+        val wavUri = withContext(Dispatchers.IO) {
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+            val name = "녹음_$stamp.wav"
+            val uri = Storage.saveToDownloads(this@RecorderService, name, Wav.encode(pcm.data, pcm.size))
+            OutFile(name, uri, "audio/wav")
+        }
+        RecorderHub.upd { copy(
+            phase = RecPhase.Stopped, seconds = pcm.seconds, segments = segments.toList(), wav = wavUri, message = null,
+        ) }
+    }
+
+    private fun prep(msg: String, f: Float?) {
+        RecorderHub.upd { copy(phase = RecPhase.Preparing, message = msg, fraction = f) }
+    }
+
+    private fun fmt(sec: Double): String {
+        val s = sec.toInt()
+        return String.format(java.util.Locale.US, "%02d:%02d", s / 60, s % 60)
+    }
+
+    private fun ensureChannel() {
+        getSystemService(NotificationManager::class.java)
+            .createNotificationChannel(NotificationChannel(CHANNEL, "녹음", NotificationManager.IMPORTANCE_LOW))
+    }
+
+    private fun notification(text: String): Notification {
+        val open = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val stop = PendingIntent.getService(
+            this, 2, Intent(this, RecorderService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        return NotificationCompat.Builder(this, CHANNEL)
+            .setSmallIcon(R.drawable.ic_notif)
+            .setContentTitle("녹음 중")
+            .setContentText(text)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(open)
+            .addAction(0, "중지", stop)
+            .build()
+    }
+
+    companion object {
+        const val ACTION_START = "com.docvoice.app.REC_START"
+        const val ACTION_STOP = "com.docvoice.app.REC_STOP"
+        const val ACTION_PAUSE = "com.docvoice.app.REC_PAUSE"
+        private const val CHANNEL = "rec"
+        private const val NOTIF_ID = 3
+    }
+}

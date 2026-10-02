@@ -8,9 +8,10 @@
 
 릴리스 페이지의 `DocVoice-android-v*.apk` 를 휴대폰에 내려받아 설치합니다 (Android 10 이상, arm64 기기 · "출처를 알 수 없는 앱" 허용 필요).
 
+- **녹음**: 마이크로 녹음하면서 실시간으로 글자가 나타나고(말이 끝나는 대로 인식), 끝나면 DOCX / PDF / XLSX / TXT 로 내보내기 (화자 구분 선택). 녹음 원본은 WAV 로 저장.
 - **문서 → 음성(MP3)**: PDF, DOC(X), XLS(X), PPT(X), HWP(X), TXT, CSV → Microsoft 신경망 남성 음성(한국어 인준·현수 / 영어 미국식·영국식), 속도 조절. 인터넷 필요.
 - **음성 → 문서**: mp3·m4a·wav 등 → XLSX(한 문장 한 행, 영어는 3단어 이상) / DOCX / PDF / TXT. 화자가 바뀌거나 발언 간격이 길면 줄 바꿈. 받아쓰기·화자 구분은 휴대폰 안에서 처리(sherpa-onnx + Whisper, 최초 1회 모델 내려받기 후 오프라인).
-- 결과는 `다운로드/DocVoice` 폴더에 저장되고, 앱에서 바로 열기·공유할 수 있습니다. 작업은 포그라운드 서비스로 돌아 화면을 꺼도 계속됩니다.
+- iOS 풍 디자인(큰 제목, 그룹 목록, 세그먼트 컨트롤). 결과는 `다운로드/DocVoice` 폴더에 저장되고, 앱에서 바로 열기·공유할 수 있습니다. 작업은 포그라운드 서비스로 돌아 화면을 꺼도 계속됩니다.
 - 빌드: Kotlin + Jetpack Compose (`android/`). `main` 에 푸시하면 GitHub Actions 가 단위 테스트 → APK 빌드 → (`android/version.txt` 버전의 릴리스가 없으면) `android-v<버전>` 릴리스를 만들어 APK 를 첨부합니다. 아이콘 재생성: `python tools/make_android_icon.py`
 - APK 는 저장소에 포함된 개인용 키스토어로 서명됩니다(Play 스토어 배포용 아님).
 
