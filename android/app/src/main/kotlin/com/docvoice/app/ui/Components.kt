@@ -72,7 +72,7 @@ fun Group(content: GroupScope.() -> Unit) {
 }
 
 @Composable
-fun RowShell(onClick: (() -> Unit)? = null, content: @Composable () -> Unit) {
+fun RowShell(onClick: (() -> Unit)? = null, content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
     Row(
         Modifier.fillMaxWidth().heightIn(min = 46.dp)
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
@@ -136,6 +136,7 @@ fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
     }
 }
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun SliderRow(title: String, valueText: String, value: Float, range: ClosedFloatingPointRange<Float>, steps: Int, onChange: (Float) -> Unit) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
