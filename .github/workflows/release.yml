@@ -1,7 +1,11 @@
-name: Release
+name: Build & Release
 
+# main 에 푸시하면: 테스트 → Windows/macOS 빌드 → (해당 버전의 릴리스가 아직 없을 때만) 태그 + 릴리스 자동 생성
+# 버전은 docvoice/__init__.py 의 __version__ 을 따릅니다. 새 릴리스를 내려면 버전을 올려 푸시하세요.
+# v* 태그를 직접 푸시해도 같은 방식으로 릴리스가 만들어집니다.
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -9,7 +13,35 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      exists: ${{ steps.v.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            VER=$(python3 -c "import re;print(re.search(r'__version__\s*=\s*\"(.+?)\"', open('docvoice/__init__.py').read()).group(1))")
+            TAG="v$VER"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "릴리스 $TAG 가 이미 있어 빌드를 건너뜁니다."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "릴리스 $TAG 를 새로 만듭니다."
+          fi
+
   test:
+    needs: prepare
+    if: needs.prepare.outputs.exists != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,9 +79,31 @@ jobs:
         with:
           name: ${{ matrix.name }}
           path: ${{ matrix.name }}.zip
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+
+  release:
+    needs: [prepare, test, build]
+    # 빌드가 일부 실패해도 소스 릴리스는 만들어지도록 (테스트 통과가 조건)
+    if: ${{ !cancelled() && needs.test.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
-          files: ${{ matrix.name }}.zip
-          generate_release_notes: true
+          path: assets
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          mkdir -p assets && ls -la assets
+          shopt -s nullglob
+          files=(assets/*.zip)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::warning::빌드 산출물이 없어 소스만 포함한 릴리스를 만듭니다. build 잡 로그를 확인하세요."
+          fi
+          gh release create "$TAG" "${files[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "DocVoice $TAG" \
+            --generate-notes

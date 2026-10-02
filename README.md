@@ -55,7 +55,7 @@ python tools/make_icon.py     # 아이콘 재생성
 pyinstaller DocVoice.spec     # 실행 파일 빌드
 ```
 
-`v*` 태그를 푸시하면 GitHub Actions가 테스트 → Windows/macOS 빌드 → 릴리스 첨부까지 수행합니다.
+`main` 에 푸시하면 GitHub Actions가 테스트 → Windows/macOS 빌드 → 릴리스(태그 `v<버전>`) 생성까지 자동으로 수행합니다. 해당 버전의 릴리스가 이미 있으면 건너뛰므로, 새 릴리스는 `docvoice/__init__.py` 의 `__version__` 을 올려 푸시하면 됩니다.
 
 ## 라이선스
 MIT. 번들 글꼴: NanumGothic (SIL OFL 1.1, `docvoice/assets/OFL-NanumGothic.txt`).
