@@ -1,0 +1,233 @@
+package com.docvoice.app
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.IBinder
+import android.os.PowerManager
+import androidx.core.app.NotificationCompat
+import com.docvoice.app.core.AudioDecoder
+import com.docvoice.app.core.EdgeTts
+import com.docvoice.app.core.ExtractException
+import com.docvoice.app.core.Exporter
+import com.docvoice.app.core.ModelException
+import com.docvoice.app.core.ModelStore
+import com.docvoice.app.core.PdfExporter
+import com.docvoice.app.core.PdfText
+import com.docvoice.app.core.Segmenter
+import com.docvoice.app.core.Storage
+import com.docvoice.app.core.Stt
+import com.docvoice.app.core.TtsEngine
+import com.docvoice.app.core.TtsException
+import com.docvoice.app.core.TtsPlanner
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/** 변환 작업을 포그라운드 서비스에서 실행해 화면을 꺼도/앱을 나가도 계속되게 한다. */
+class JobService : Service() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var wake: PowerManager.WakeLock? = null
+    private var lastNotify = 0L
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_CANCEL) {
+            JobHub.job?.cancel()
+            if (JobHub.job?.isActive != true) stopSelf()
+            return START_NOT_STICKY
+        }
+        val req = JobHub.pending
+        if (req == null || JobHub.job?.isActive == true) {
+            if (req == null && JobHub.job?.isActive != true) stopSelf()
+            return START_NOT_STICKY
+        }
+        JobHub.pending = null
+        ensureChannel()
+        val title = if (req is JobRequest.Tts) "문서 → 음성" else "음성 → 문서"
+        startForeground(NOTIF_ID, buildNotification(title, "준비 중", null), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DocVoice:job").apply { acquire(3 * 60 * 60 * 1000L) }
+
+        JobHub.state.value = JobState.Running(title, "준비 중", null)
+        JobHub.job = scope.launch {
+            try {
+                when (req) {
+                    is JobRequest.Tts -> runTts(req, title)
+                    is JobRequest.Stt -> runStt(req, title)
+                }
+            } catch (e: CancellationException) {
+                JobHub.state.value = JobState.Failed("작업을 취소했습니다.")
+            } catch (e: ExtractException) {
+                JobHub.state.value = JobState.Failed(e.message ?: "문서를 읽지 못했습니다.")
+            } catch (e: TtsException) {
+                JobHub.state.value = JobState.Failed(e.message ?: "음성 합성에 실패했습니다.")
+            } catch (e: ModelException) {
+                JobHub.state.value = JobState.Failed(e.message ?: "모델을 준비하지 못했습니다.")
+            } catch (e: AudioDecoder.DecodeException) {
+                JobHub.state.value = JobState.Failed(e.message ?: "오디오를 읽지 못했습니다.")
+            } catch (e: OutOfMemoryError) {
+                JobHub.state.value = JobState.Failed("메모리가 부족합니다. 더 짧은 파일로 나눠 시도하세요.")
+            } catch (e: Throwable) {
+                JobHub.state.value = JobState.Failed("오류가 발생했습니다: ${e.message ?: e.javaClass.simpleName}")
+            } finally {
+                wake?.let { if (it.isHeld) it.release() }
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                notifyFinished()
+                stopSelf()
+            }
+        }
+        return START_NOT_STICKY
+    }
+
+    override fun onDestroy() {
+        scope.coroutineContext[Job]?.cancel()
+        wake?.let { if (it.isHeld) it.release() }
+        super.onDestroy()
+    }
+
+    // ---- 문서 → 음성 ----------------------------------------------------------
+
+    private suspend fun runTts(req: JobRequest.Tts, title: String) {
+        progress(title, "문서 읽는 중", null)
+        val text = withContext(Dispatchers.IO) {
+            val bytes = Storage.readBytes(this@JobService, req.doc.uri)
+            com.docvoice.app.core.Extractors.extract(req.doc.name, bytes, PdfText.reader(this@JobService))
+        }
+        val chunks = TtsPlanner.buildChunks(text)
+        if (chunks.isEmpty()) throw ExtractException("읽을 텍스트가 없습니다.")
+        progress(title, "음성 만드는 중 (0/${chunks.size})", 0f)
+        val mp3 = TtsEngine.synthesizeAll(chunks, req.koVoice, req.enVoice, req.speed, EdgeTts()) { done, total ->
+            progress(title, "음성 만드는 중 ($done/$total)", done.toFloat() / total)
+        }
+        progress(title, "저장하는 중", null)
+        val name = Storage.baseName(req.doc.name) + ".mp3"
+        val uri = withContext(Dispatchers.IO) { Storage.saveToDownloads(this@JobService, name, mp3) }
+        JobHub.state.value = JobState.Done(
+            "MP3 변환 완료  (${text.length}자)",
+            listOf(OutFile(name, uri, "audio/mpeg")),
+            null,
+        )
+    }
+
+    // ---- 음성 → 문서 ----------------------------------------------------------
+
+    private suspend fun runStt(req: JobRequest.Stt, title: String) {
+        val job = currentCoroutineContext()[Job]!!
+        val active = { job.isActive }
+        progress(title, "오디오 읽는 중", 0f)
+        val pcm = withContext(Dispatchers.IO) {
+            AudioDecoder.decode(this@JobService, req.audio.uri, active) { progress(title, "오디오 읽는 중", it) }
+        }
+        val store = ModelStore(this)
+        val result = withContext(Dispatchers.Default) {
+            Stt.transcribe(store, pcm, req.opts, active) { stage, f -> progress(title, stage, f) }
+        }
+        if (result.segments.isEmpty()) throw ExtractException("음성에서 인식된 말이 없습니다.")
+        progress(title, "문서로 정리하는 중", null)
+        val (sentences, paragraphs) = Stt.toDocument(result, req.gap)
+        val speakers = req.showSpeaker && result.turns.isNotEmpty()
+        val docTitle = Storage.baseName(req.audio.name)
+        val bytes = withContext(Dispatchers.IO) {
+            when (req.format) {
+                "xlsx" -> Exporter.xlsx(sentences, req.includeTime, speakers)
+                "docx" -> Exporter.docx(paragraphs, docTitle, req.includeTime, speakers)
+                "pdf" -> PdfExporter.export(this@JobService, paragraphs, docTitle, req.includeTime, speakers)
+                else -> Exporter.txt(paragraphs, req.includeTime, speakers)
+            }
+        }
+        val name = "$docTitle.${req.format}"
+        val uri = withContext(Dispatchers.IO) { Storage.saveToDownloads(this@JobService, name, bytes) }
+        val n = result.turns.map { it.third }.distinct().size
+        val info = buildString {
+            append("${sentences.size}문장")
+            if (req.format != "xlsx") append(" · ${paragraphs.size}문단")
+            if (n > 0) append(" · 화자 ${n}명")
+        }
+        JobHub.state.value = JobState.Done(
+            "문서 변환 완료  ($info)",
+            listOf(OutFile(name, uri, Storage.mimeFor(name))),
+            result.diarizationNote,
+        )
+    }
+
+    // ---- 알림 -----------------------------------------------------------------
+
+    private fun progress(title: String, stage: String, fraction: Float?) {
+        JobHub.state.value = JobState.Running(title, stage, fraction)
+        val now = System.currentTimeMillis()
+        if (now - lastNotify > 700) {
+            lastNotify = now
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.notify(NOTIF_ID, buildNotification(title, stage, fraction))
+        }
+    }
+
+    private fun ensureChannel() {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(NotificationChannel(CHANNEL, "변환 진행", NotificationManager.IMPORTANCE_LOW))
+        nm.createNotificationChannel(NotificationChannel(CHANNEL_DONE, "변환 완료", NotificationManager.IMPORTANCE_DEFAULT))
+    }
+
+    private fun openApp(): PendingIntent = PendingIntent.getActivity(
+        this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+
+    private fun buildNotification(title: String, stage: String, fraction: Float?): Notification {
+        val cancel = PendingIntent.getService(
+            this, 1, Intent(this, JobService::class.java).setAction(ACTION_CANCEL),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        return NotificationCompat.Builder(this, CHANNEL)
+            .setSmallIcon(R.drawable.ic_notif)
+            .setContentTitle("DocVoice · $title")
+            .setContentText(stage)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(openApp())
+            .setProgress(100, ((fraction ?: 0f) * 100).toInt(), fraction == null)
+            .addAction(0, "취소", cancel)
+            .build()
+    }
+
+    private fun notifyFinished() {
+        val s = JobHub.state.value
+        val text = when (s) {
+            is JobState.Done -> s.message
+            is JobState.Failed -> s.message
+            else -> return
+        }
+        val n = NotificationCompat.Builder(this, CHANNEL_DONE)
+            .setSmallIcon(R.drawable.ic_notif)
+            .setContentTitle(if (s is JobState.Done) "변환이 끝났어요" else "변환하지 못했어요")
+            .setContentText(text)
+            .setAutoCancel(true)
+            .setContentIntent(openApp())
+            .build()
+        try {
+            getSystemService(NotificationManager::class.java).notify(NOTIF_DONE_ID, n)
+        } catch (_: SecurityException) {
+        }
+    }
+
+    companion object {
+        const val ACTION_CANCEL = "com.docvoice.app.CANCEL"
+        private const val CHANNEL = "job"
+        private const val CHANNEL_DONE = "job_done"
+        private const val NOTIF_ID = 1
+        private const val NOTIF_DONE_ID = 2
+    }
+}

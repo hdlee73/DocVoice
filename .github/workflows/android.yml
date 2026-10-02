@@ -1,0 +1,85 @@
+name: Android APK
+
+# main 에 푸시하면: 단위 테스트 → 릴리스 APK 빌드 → (android/version.txt 의 버전 릴리스가 아직 없으면) 태그 android-v<버전> 으로 릴리스 생성 + APK 첨부
+# 새 APK 릴리스를 내려면 android/version.txt 의 버전을 올려 푸시하세요.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      exists: ${{ steps.v.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(tr -d '[:space:]' < android/version.txt)
+          TAG="android-v$VER"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+      - name: Download sherpa-onnx AAR
+        run: |
+          mkdir -p android/app/libs
+          curl -fL --retry 3 -o android/app/libs/sherpa-onnx.aar \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar
+          ls -la android/app/libs
+      - name: Unit tests
+        working-directory: android
+        run: gradle --no-daemon :app:testDebugUnitTest
+      - name: Build release APK
+        working-directory: android
+        run: gradle --no-daemon :app:assembleRelease
+      - name: Collect APK
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk "dist/DocVoice-android-v${{ steps.v.outputs.version }}.apk"
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DocVoice-android
+          path: dist/*.apk
+      - name: Create release
+        if: steps.v.outputs.exists != 'true' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
+          VER: ${{ steps.v.outputs.version }}
+        run: |
+          cat > notes.md <<'NOTES'
+          ## DocVoice for Android
+
+          문서 ↔ 음성 변환 안드로이드 앱 (APK, arm64 기기용 / Android 10 이상)
+
+          - **문서 → 음성(MP3)**: pdf, docx, doc, xlsx, xls, pptx, ppt, hwpx, hwp, txt, csv · 한국어/영어 자연스러운 Microsoft 신경망 남성 음성 · 미국식/영국식 선택
+          - **음성 → 문서**: xlsx(한 문장 한 행 · 영어는 3단어 이상), docx, pdf, txt · 화자 구분, 발언 간격에 따른 줄바꿈
+          - 음성 인식은 휴대폰 안에서 처리합니다(최초 1회 모델 내려받기, 이후 오프라인). 문서 → 음성은 인터넷이 필요합니다.
+          - 설치: APK 를 내려받아 실행 → "출처를 알 수 없는 앱" 설치 허용. 개인 설치용 서명이며 Play 스토어 배포용이 아닙니다.
+          NOTES
+          gh release create "$TAG" "dist/DocVoice-android-v$VER.apk" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "DocVoice Android v$VER" --notes-file notes.md

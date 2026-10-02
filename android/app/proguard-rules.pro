@@ -1,0 +1,10 @@
+-keep class com.k2fsa.sherpa.onnx.** { *; }
+-keep class org.apache.pdfbox.** { *; }
+-dontwarn org.apache.pdfbox.**
+-dontwarn com.gemalto.jp2.**
+-dontwarn org.apache.commons.compress.**
+-dontwarn javax.annotation.**
+-dontwarn org.slf4j.**
+-dontwarn org.conscrypt.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.openjsse.**
