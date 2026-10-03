@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.GraphicEq
@@ -175,6 +176,15 @@ private fun androidx.compose.foundation.layout.ColumnScope.RecordScreen(vm: AppV
     TitleBar("녹음 & 문서화") {
         if (stopped) RoundIcon(Icons.Rounded.Tune, Ios.Blue) { sheet = true }
     }
+    val jobNow = vm.job.collectAsState().value
+    val modelReady = remember(vm.recLang, jobNow) { vm.liveReady(vm.recLang) }
+    if (idle) {
+        Segmented(LiveLang.values().map { it.label }, LiveLang.values().indexOfFirst { it.key == vm.recLang }.coerceAtLeast(0)) {
+            vm.recLang = LiveLang.values()[it].key; vm.save()
+        }
+    } else if (live || busy) {
+        Text(LiveLang.of(vm.recLang).label, fontSize = 13.sp, color = Ios.Secondary, modifier = Modifier.padding(start = 4.dp))
+    }
     JobPanel(vm)
 
     // 받아쓰기 영역 (화면의 대부분)
@@ -197,12 +207,11 @@ private fun androidx.compose.foundation.layout.ColumnScope.RecordScreen(vm: AppV
                         fontSize = 15.sp, color = Ios.Secondary,
                     )
                 }
-                if (idle) {
-                    Box(Modifier.width(220.dp)) {
-                        Segmented(LiveLang.values().map { it.label }, LiveLang.values().indexOfFirst { it.key == vm.recLang }.coerceAtLeast(0)) {
-                            vm.recLang = LiveLang.values()[it].key; vm.save()
-                        }
-                    }
+                if (idle && !modelReady) {
+                    FilledButton(
+                        "${LiveLang.of(vm.recLang).label} 모델 내려받기 (약 ${LiveLang.of(vm.recLang).mb}MB)", Icons.Rounded.CloudDownload,
+                        enabled = jobNow !is JobState.Running, modifier = Modifier.padding(horizontal = 24.dp).fillMaxWidth(),
+                    ) { vm.downloadModel() }
                 }
             }
         }
@@ -404,6 +413,12 @@ private fun JobPanel(vm: AppViewModel) {
         is JobState.Done -> Column(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Ios.Card).padding(start = 14.dp, top = 6.dp, bottom = 6.dp, end = 6.dp),
         ) {
+            if (s.files.isEmpty()) Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.CheckCircle, null, tint = Ios.Blue, modifier = Modifier.size(22.dp))
+                Spacer(Modifier.width(10.dp))
+                Text(s.message, fontSize = 15.sp, color = Ios.Label, modifier = Modifier.weight(1f))
+                RoundIcon(Icons.Rounded.Close, Ios.Secondary, 20.dp) { vm.dismissResult() }
+            }
             s.files.forEach { f ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Rounded.CheckCircle, null, tint = Ios.Blue, modifier = Modifier.size(22.dp))

@@ -56,7 +56,7 @@ class JobService : Service() {
         }
         JobHub.pending = null
         ensureChannel()
-        val title = when (req) { is JobRequest.Tts -> "문서 → 음성"; is JobRequest.Stt -> "음성 → 문서"; is JobRequest.RecExport -> "녹음 → 문서" }
+        val title = when (req) { is JobRequest.Tts -> "문서 → 음성"; is JobRequest.Stt -> "음성 → 문서"; is JobRequest.RecExport -> "녹음 → 문서"; is JobRequest.ModelDownload -> "모델 내려받기" }
         startForeground(NOTIF_ID, buildNotification(title, "준비 중", null), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DocVoice:job").apply { acquire(3 * 60 * 60 * 1000L) }
@@ -68,6 +68,7 @@ class JobService : Service() {
                     is JobRequest.Tts -> runTts(req, title)
                     is JobRequest.Stt -> runStt(req, title)
                     is JobRequest.RecExport -> runRecExport(req, title)
+                    is JobRequest.ModelDownload -> runModelDownload(req, title)
                 }
             } catch (e: CancellationException) {
                 JobHub.state.value = JobState.Failed("작업을 취소했습니다.")
@@ -138,6 +139,15 @@ class JobService : Service() {
         }
         if (result.segments.isEmpty()) throw ExtractException("음성에서 인식된 말이 없습니다.")
         finishDocument(title, result, req.format, Storage.baseName(req.audio.name), req.gap, req.includeTime, req.showSpeaker)
+    }
+
+    private suspend fun runModelDownload(req: JobRequest.ModelDownload, title: String) {
+        val job = currentCoroutineContext()[Job]!!
+        progress(title, "${req.lang.label} 모델 내려받는 중", 0f)
+        withContext(Dispatchers.IO) {
+            ModelStore(this@JobService).ensureLive(req.lang, { job.isActive }) { m, f -> progress(title, "${req.lang.label} · $m", f) }
+        }
+        JobHub.state.value = JobState.Done("${req.lang.label} 모델 준비 완료", emptyList(), null)
     }
 
     private suspend fun runRecExport(req: JobRequest.RecExport, title: String) {

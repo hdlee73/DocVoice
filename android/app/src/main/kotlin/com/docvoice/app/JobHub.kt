@@ -32,6 +32,9 @@ sealed interface JobRequest {
         val showSpeaker: Boolean,
     ) : JobRequest
 
+    /** 실시간 인식 모델 미리 내려받기 */
+    data class ModelDownload(val lang: com.docvoice.app.core.LiveLang) : JobRequest
+
     /** 녹음(실시간 받아쓰기) 결과를 문서로 내보내기 */
     data class RecExport(
         val title: String,

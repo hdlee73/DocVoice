@@ -70,6 +70,12 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
         ContextCompat.startForegroundService(app, Intent(app, JobService::class.java))
     }
 
+    fun liveReady(lang: String) = com.docvoice.app.core.ModelStore(app).liveReady(com.docvoice.app.core.LiveLang.of(lang))
+
+    fun downloadModel() {
+        launch(JobRequest.ModelDownload(com.docvoice.app.core.LiveLang.of(recLang)))
+    }
+
     fun startTts() {
         val f = ttsFile ?: return
         launch(JobRequest.Tts(f, koVoice, enVoice, speed.toDouble()))

@@ -17,9 +17,9 @@ enum class WhisperSize(val key: String, val label: String, val hint: String) {
 }
 
 /** 실시간(스트리밍) 인식 언어 */
-enum class LiveLang(val key: String, val label: String, val archive: String) {
-    EN("en", "English", "sherpa-onnx-streaming-zipformer-en-2023-06-26"),
-    KO("ko", "한국어", "sherpa-onnx-streaming-zipformer-korean-2024-06-16");
+enum class LiveLang(val key: String, val label: String, val archive: String, val mb: Int) {
+    EN("en", "English", "sherpa-onnx-streaming-zipformer-en-2023-06-26", 300),
+    KO("ko", "한국어", "sherpa-onnx-streaming-zipformer-korean-2024-06-16", 400);
 
     companion object {
         fun of(key: String) = values().firstOrNull { it.key == key } ?: EN
