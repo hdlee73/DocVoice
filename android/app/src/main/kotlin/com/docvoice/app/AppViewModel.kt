@@ -53,7 +53,7 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun save() {
         prefs.edit()
-            .putString("koVoice", koVoice).putString("accent", accent).putString("recLang", recLang)
+            .putString("koVoice", koVoice).putString("accent", accent).putString("recLang", recLang).putBoolean("recBt", recBluetooth)
             .putString("enVoiceUs", enVoiceUs).putString("enVoiceUk", enVoiceUk)
             .putFloat("speed", speed)
             .putString("format", format).putString("language", language).putString("size", size.name)
@@ -105,11 +105,13 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     var recDiarize by mutableStateOf(false)
     var recRefine by mutableStateOf(false)
     var recLang by mutableStateOf(prefs.getString("recLang", "en")!!)
+    var recBluetooth by mutableStateOf(prefs.getBoolean("recBt", true))
 
     fun startRecording() {
         if (RecorderHub.isActive()) return
         RecorderHub.reset()
         RecorderHub.language = recLang
+        RecorderHub.bluetooth = recBluetooth
         save()
         ContextCompat.startForegroundService(app, Intent(app, RecorderService::class.java).setAction(RecorderService.ACTION_START))
     }
@@ -150,7 +152,7 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     fun exportRecording() {
         val title = RecorderHub.state.value.title.ifBlank { "녹음" }
         prefs.edit().putString("recFormat", recFormat).putString("recLang", recLang).apply()
-        launch(JobRequest.RecExport(title, recFormat, recRefine, recLang, size, recDiarize, gap.toDouble(), includeTime, showSpeaker && recDiarize))
+        launch(JobRequest.RecExport(title, recFormat, recRefine, if (recLang == "mix") "" else recLang, size, recDiarize, gap.toDouble(), includeTime, showSpeaker && recDiarize))
     }
 
     val formats get() = Exporter.FORMATS

@@ -95,8 +95,9 @@ class RecorderService : Service() {
         }
         if (RecorderHub.stopRequested.get()) { RecorderHub.reset(); return }
         prep("음성 인식 준비 중", null)
-        val recognizer = Stt.newLive(store, lang)
-        val stream = recognizer.createStream()
+        // 한·영 혼합: 두 언어 인식기를 동시에 돌려 문장마다 확신도가 높은 쪽을 채택
+        class Eng(val lang: LiveLang, val rec: com.k2fsa.sherpa.onnx.OnlineRecognizer) { val stream = rec.createStream() }
+        val engs = lang.members.map { Eng(it, Stt.newLive(store, it)) }
 
         val pcm = PcmBuffer(sr * 60 * 5)
         RecorderHub.pcm = pcm
@@ -111,34 +112,45 @@ class RecorderService : Service() {
             var segStart = 0.0
             var lastEnd = 0.0
             var active = false
-            fun decodeAll() { while (recognizer.isReady(stream)) recognizer.decode(stream) }
+            fun decodeAll() { for (e in engs) while (e.rec.isReady(e.stream)) e.rec.decode(e.stream) }
+            // 가장 그럴듯한 후보 (텍스트, 언어키). 확신도(평균 로그확률)가 가장 높은 쪽.
+            fun best(): Pair<String, String> {
+                var bt = ""; var bl = engs[0].lang.key; var bs = Double.NEGATIVE_INFINITY
+                for (e in engs) {
+                    val r = e.rec.getResult(e.stream)
+                    if (r.text.isBlank()) continue
+                    val sc = if (r.ysProbs.isNotEmpty()) r.ysProbs.average() else -r.text.length * 0.01
+                    if (sc > bs || bt.isEmpty()) { bs = sc; bt = r.text; bl = e.lang.key }
+                }
+                return bt to bl
+            }
             fun finalizeSegment(now: Double) {
-                val text = LiveText.format(recognizer.getResult(stream).text, lang.key, true)
+                val (raw, lk) = best()
+                val text = LiveText.format(raw, lk, true)
                 if (text.isNotEmpty()) {
                     segments.add(Segment(segStart, maxOf(now, segStart + 0.3), text))
                     lastEnd = now
                 }
-                recognizer.reset(stream)
+                for (e in engs) e.rec.reset(e.stream)
                 active = false
                 RecorderHub.upd { copy(segments = segments.toList(), partial = "", speaking = false) }
             }
             for (chunk in queue) {
-                stream.acceptWaveform(chunk, sr)
+                for (e in engs) e.stream.acceptWaveform(chunk, sr)
                 fed += chunk.size
                 decodeAll()
                 val now = fed / sr.toDouble()
-                val raw = recognizer.getResult(stream).text
+                val (raw, lk) = best()
                 if (raw.isNotBlank() && !active) { active = true; segStart = maxOf(lastEnd, now - 0.5) }
-                if (recognizer.isEndpoint(stream)) {
+                if (engs.any { it.rec.isEndpoint(it.stream) }) {
                     finalizeSegment(now)
                 } else {
-                    val part = LiveText.format(raw, lang.key, false)
+                    val part = LiveText.format(raw, lk, false)
                     RecorderHub.upd { copy(partial = part, speaking = part.isNotEmpty()) }
                 }
             }
             // 마무리: 남은 꼬리 처리
-            stream.acceptWaveform(FloatArray(sr / 2), sr)
-            stream.inputFinished()
+            for (e in engs) { e.stream.acceptWaveform(FloatArray(sr / 2), sr); e.stream.inputFinished() }
             decodeAll()
             finalizeSegment(fed / sr.toDouble())
           } catch (e: CancellationException) {
@@ -150,19 +162,15 @@ class RecorderService : Service() {
         }
 
         val minBuf = AudioRecord.getMinBufferSize(sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        val route = routeInput(RecorderHub.bluetooth)
         val rec = AudioRecord(
-            MediaRecorder.AudioSource.MIC, sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+            if (route.bt) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.MIC, sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
             maxOf(minBuf, sr * 4),
         )
-        // 블루투스 이어폰이 연결돼 있어도 휴대폰 내장 마이크로 녹음 (블루투스 입력은 무음이 되기 쉬움)
-        try {
-            val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
-            am.getDevices(android.media.AudioManager.GET_DEVICES_INPUTS)
-                .firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_MIC }
-                ?.let { rec.preferredDevice = it }
-        } catch (_: Exception) {}
+        route.device?.let { rec.preferredDevice = it }
+        RecorderHub.upd { copy(source = route.name) }
         if (rec.state != AudioRecord.STATE_INITIALIZED) {
-            rec.release(); queue.close(); worker.cancel(); stream.release(); recognizer.release()
+            rec.release(); queue.close(); worker.cancel(); engs.forEach { it.stream.release(); it.rec.release() }; route.cleanup()
             throw IllegalStateException("마이크를 시작할 수 없습니다.")
         }
         try {
@@ -201,16 +209,52 @@ class RecorderService : Service() {
         } finally {
             try { rec.stop() } catch (_: Exception) {}
             rec.release()
+            route.cleanup()
         }
 
         RecorderHub.upd { copy(phase = RecPhase.Finishing, message = null, level = 0f) }
         queue.close()
         worker.join()
-        stream.release()
-        recognizer.release()
+        engs.forEach { it.stream.release(); it.rec.release() }
 
         val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
         RecorderHub.upd { copy(phase = RecPhase.Stopped, seconds = pcm.seconds, segments = segments.toList(), wav = null, message = workerError, title = "녹음_$stamp") }
+    }
+
+    private class Route(val bt: Boolean, val name: String, val device: android.media.AudioDeviceInfo?, val cleanup: () -> Unit)
+
+    /** 블루투스 마이크가 있으면(설정에 따라) 통화용 경로로 연결하고, 없으면 내장 마이크를 쓴다. */
+    private suspend fun routeInput(useBt: Boolean): Route {
+        val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+        val inputs = try { am.getDevices(android.media.AudioManager.GET_DEVICES_INPUTS).toList() } catch (_: Exception) { emptyList() }
+        val builtin = inputs.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_MIC }
+        val builtinRoute = Route(false, "내장 마이크", builtin) {}
+        if (!useBt) return builtinRoute
+        val bt = inputs.firstOrNull {
+            it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                (android.os.Build.VERSION.SDK_INT >= 31 && it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET)
+        } ?: return builtinRoute
+        val label = "블루투스 · " + (bt.productName?.toString()?.takeIf { it.isNotBlank() } ?: "마이크")
+        return try {
+            am.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
+            if (android.os.Build.VERSION.SDK_INT >= 31) {
+                val dev = am.availableCommunicationDevices.firstOrNull { it.id == bt.id }
+                    ?: am.availableCommunicationDevices.firstOrNull { it.type == bt.type }
+                if (dev == null || !am.setCommunicationDevice(dev)) { am.mode = android.media.AudioManager.MODE_NORMAL; return builtinRoute }
+                kotlinx.coroutines.delay(600)
+                Route(true, label, bt) { try { am.clearCommunicationDevice(); am.mode = android.media.AudioManager.MODE_NORMAL } catch (_: Exception) {} }
+            } else {
+                @Suppress("DEPRECATION") am.startBluetoothSco()
+                @Suppress("DEPRECATION") am.isBluetoothScoOn = true
+                kotlinx.coroutines.delay(1500)
+                Route(true, label, bt) {
+                    @Suppress("DEPRECATION") try { am.stopBluetoothSco(); am.isBluetoothScoOn = false; am.mode = android.media.AudioManager.MODE_NORMAL } catch (_: Exception) {}
+                }
+            }
+        } catch (_: Exception) {
+            try { am.mode = android.media.AudioManager.MODE_NORMAL } catch (_: Exception) {}
+            builtinRoute
+        }
     }
 
     private fun prep(msg: String, f: Float?) {

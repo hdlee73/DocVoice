@@ -19,7 +19,11 @@ enum class WhisperSize(val key: String, val label: String, val hint: String) {
 /** 실시간(스트리밍) 인식 언어 */
 enum class LiveLang(val key: String, val label: String, val archive: String, val mb: Int) {
     EN("en", "English", "sherpa-onnx-streaming-zipformer-en-2023-06-26", 300),
-    KO("ko", "한국어", "sherpa-onnx-streaming-zipformer-korean-2024-06-16", 400);
+    KO("ko", "한국어", "sherpa-onnx-streaming-zipformer-korean-2024-06-16", 400),
+    MIX("mix", "한·영", "", 700);
+
+    /** 실제로 필요한 단일 언어 모델들 */
+    val members: List<LiveLang> get() = if (this == MIX) listOf(EN, KO) else listOf(this)
 
     companion object {
         fun of(key: String) = values().firstOrNull { it.key == key } ?: EN
@@ -58,10 +62,15 @@ class ModelStore(context: Context) {
         return LiveFiles(File(d, "encoder.onnx"), File(d, "decoder.onnx"), File(d, "joiner.onnx"), File(d, "tokens.txt"))
     }
 
-    fun liveReady(l: LiveLang) = live(l).let { it.encoder.exists() && it.decoder.exists() && it.joiner.exists() && it.tokens.exists() }
+    fun liveReady(l: LiveLang): Boolean = if (l == LiveLang.MIX) l.members.all { liveReady(it) } else live(l).let { it.encoder.exists() && it.decoder.exists() && it.joiner.exists() && it.tokens.exists() }
 
     /** 스트리밍 모델 압축 파일에서 인코더/디코더/조이너/토큰만 골라 꺼낸다 (int8 우선). */
     fun ensureLive(l: LiveLang, isActive: () -> Boolean, onProgress: (String, Float) -> Unit) {
+        if (l == LiveLang.MIX) {
+            val ms = l.members
+            ms.forEachIndexed { i, m -> ensureLive(m, isActive) { s, f -> onProgress("${m.label} · $s", (i + f) / ms.size) } }
+            return
+        }
         if (liveReady(l)) return
         val f = live(l)
         val dir = f.encoder.parentFile!!

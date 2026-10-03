@@ -161,12 +161,15 @@ private fun androidx.compose.foundation.layout.ColumnScope.RecordScreen(vm: AppV
     val ctx = LocalContext.current
     val rec by vm.rec.collectAsState()
     var sheet by remember { mutableStateOf(false) }
-    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        if (ok) vm.startRecording() else Toast.makeText(ctx, "마이크 권한이 필요해요.", Toast.LENGTH_SHORT).show()
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
+        if (r[Manifest.permission.RECORD_AUDIO] == true) vm.startRecording() else Toast.makeText(ctx, "마이크 권한이 필요해요.", Toast.LENGTH_SHORT).show()
     }
     fun start() {
-        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) vm.startRecording()
-        else permission.launch(Manifest.permission.RECORD_AUDIO)
+        val need = ArrayList<String>()
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) need += Manifest.permission.RECORD_AUDIO
+        if (android.os.Build.VERSION.SDK_INT >= 31 && vm.recBluetooth &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) need += Manifest.permission.BLUETOOTH_CONNECT
+        if (need.isEmpty()) vm.startRecording() else permission.launch(need.toTypedArray())
     }
     val live = rec.phase == RecPhase.Recording || rec.phase == RecPhase.Paused
     val busy = rec.phase == RecPhase.Preparing || rec.phase == RecPhase.Finishing
@@ -182,8 +185,9 @@ private fun androidx.compose.foundation.layout.ColumnScope.RecordScreen(vm: AppV
         Segmented(LiveLang.values().map { it.label }, LiveLang.values().indexOfFirst { it.key == vm.recLang }.coerceAtLeast(0)) {
             vm.recLang = LiveLang.values()[it].key; vm.save()
         }
+        Segmented(listOf("자동 (블루투스 우선)", "내장 마이크"), if (vm.recBluetooth) 0 else 1) { vm.recBluetooth = it == 0; vm.save() }
     } else if (live || busy) {
-        Text(LiveLang.of(vm.recLang).label, fontSize = 13.sp, color = Ios.Secondary, modifier = Modifier.padding(start = 4.dp))
+        Text(LiveLang.of(vm.recLang).label + if (rec.source.isNotEmpty()) " · ${rec.source}" else "", fontSize = 13.sp, color = Ios.Secondary, modifier = Modifier.padding(start = 4.dp))
     }
     JobPanel(vm)
 

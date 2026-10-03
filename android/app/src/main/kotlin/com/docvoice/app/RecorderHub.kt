@@ -21,6 +21,7 @@ data class RecState(
     val wav: OutFile? = null,
     val peak: Float = 0f,
     val title: String = "",
+    val source: String = "",
 )
 
 /** 녹음 서비스와 화면이 공유하는 상태. 녹음이 끝나면 pcm/segments 가 내보내기에 쓰인다. */
@@ -30,6 +31,7 @@ object RecorderHub {
     @Volatile var pcm: PcmBuffer? = null
     @Volatile var job: Job? = null
     @Volatile var language: String = "en"
+    @Volatile var bluetooth: Boolean = true
     val stopRequested = AtomicBoolean(false)
     val paused = AtomicBoolean(false)
 
