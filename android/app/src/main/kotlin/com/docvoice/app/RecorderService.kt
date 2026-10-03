@@ -103,6 +103,28 @@ class RecorderService : Service() {
         RecorderHub.pcm = pcm
         val queue = Channel<FloatArray>(Channel.UNLIMITED)
         val segments = ArrayList<Segment>()
+        // 한·영 혼합: 문장이 끝날 때마다 Whisper(다국어)로 다시 인식해 글자를 교체한다 (화면엔 먼저 빠른 결과가 보임)
+        val mix = lang == LiveLang.MIX
+        val refineQ = Channel<Triple<Int, Double, Double>>(Channel.UNLIMITED)
+        val refineJob = if (!mix) null else scope.launch(Dispatchers.Default) {
+            try {
+                val wr = Stt.newRecognizer(store, com.docvoice.app.core.SttOptions("", com.docvoice.app.core.WhisperSize.SMALL, false), 2)
+                try {
+                    for ((idx, a, b) in refineQ) {
+                        val from = ((a - 0.3).coerceAtLeast(0.0) * sr).toInt()
+                        val to = minOf(((b + 0.3) * sr).toInt(), pcm.size)
+                        if (to - from < sr / 2) continue
+                        val seg = Stt.decodeSegment(wr, pcm.toFloats(from, to), from) ?: continue
+                        synchronized(segments) {
+                            if (idx < segments.size) segments[idx] = segments[idx].copy(text = LiveText.format(seg.text, "ko", true))
+                            RecorderHub.upd { copy(segments = segments.toList()) }
+                        }
+                    }
+                } finally { wr.release() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {}
+        }
 
         // 인식 워커: 녹음 스레드와 분리해 오디오가 끊기지 않게 한다.
         var workerError: String? = null
@@ -128,12 +150,13 @@ class RecorderService : Service() {
                 val (raw, lk) = best()
                 val text = LiveText.format(raw, lk, true)
                 if (text.isNotEmpty()) {
-                    segments.add(Segment(segStart, maxOf(now, segStart + 0.3), text))
+                    val idx = synchronized(segments) { segments.add(Segment(segStart, maxOf(now, segStart + 0.3), text)); segments.size - 1 }
                     lastEnd = now
+                    if (mix) refineQ.trySend(Triple(idx, segStart, maxOf(now, segStart + 0.3)))
                 }
                 for (e in engs) e.rec.reset(e.stream)
                 active = false
-                RecorderHub.upd { copy(segments = segments.toList(), partial = "", speaking = false) }
+                synchronized(segments) { RecorderHub.upd { copy(segments = segments.toList(), partial = "", speaking = false) } }
             }
             for (chunk in queue) {
                 for (e in engs) e.stream.acceptWaveform(chunk, sr)
@@ -170,7 +193,7 @@ class RecorderService : Service() {
         route.device?.let { rec.preferredDevice = it }
         RecorderHub.upd { copy(source = route.name) }
         if (rec.state != AudioRecord.STATE_INITIALIZED) {
-            rec.release(); queue.close(); worker.cancel(); engs.forEach { it.stream.release(); it.rec.release() }; route.cleanup()
+            rec.release(); queue.close(); worker.cancel(); refineQ.close(); refineJob?.cancel(); engs.forEach { it.stream.release(); it.rec.release() }; route.cleanup()
             throw IllegalStateException("마이크를 시작할 수 없습니다.")
         }
         try {
@@ -215,6 +238,8 @@ class RecorderService : Service() {
         RecorderHub.upd { copy(phase = RecPhase.Finishing, message = null, level = 0f) }
         queue.close()
         worker.join()
+        refineQ.close()
+        refineJob?.join()
         engs.forEach { it.stream.release(); it.rec.release() }
 
         val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())

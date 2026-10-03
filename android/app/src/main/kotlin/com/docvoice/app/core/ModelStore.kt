@@ -20,7 +20,7 @@ enum class WhisperSize(val key: String, val label: String, val hint: String) {
 enum class LiveLang(val key: String, val label: String, val archive: String, val mb: Int) {
     EN("en", "English", "sherpa-onnx-streaming-zipformer-en-2023-06-26", 300),
     KO("ko", "한국어", "sherpa-onnx-streaming-zipformer-korean-2024-06-16", 400),
-    MIX("mix", "한·영", "", 700);
+    MIX("mix", "한·영", "", 1100);
 
     /** 실제로 필요한 단일 언어 모델들 */
     val members: List<LiveLang> get() = if (this == MIX) listOf(EN, KO) else listOf(this)
@@ -62,13 +62,14 @@ class ModelStore(context: Context) {
         return LiveFiles(File(d, "encoder.onnx"), File(d, "decoder.onnx"), File(d, "joiner.onnx"), File(d, "tokens.txt"))
     }
 
-    fun liveReady(l: LiveLang): Boolean = if (l == LiveLang.MIX) l.members.all { liveReady(it) } else live(l).let { it.encoder.exists() && it.decoder.exists() && it.joiner.exists() && it.tokens.exists() }
+    fun liveReady(l: LiveLang): Boolean = if (l == LiveLang.MIX) (l.members.all { liveReady(it) } && whisperReady(WhisperSize.SMALL)) else live(l).let { it.encoder.exists() && it.decoder.exists() && it.joiner.exists() && it.tokens.exists() }
 
     /** 스트리밍 모델 압축 파일에서 인코더/디코더/조이너/토큰만 골라 꺼낸다 (int8 우선). */
     fun ensureLive(l: LiveLang, isActive: () -> Boolean, onProgress: (String, Float) -> Unit) {
         if (l == LiveLang.MIX) {
             val ms = l.members
-            ms.forEachIndexed { i, m -> ensureLive(m, isActive) { s, f -> onProgress("${m.label} · $s", (i + f) / ms.size) } }
+            ms.forEachIndexed { i, m -> ensureLive(m, isActive) { s, f -> onProgress("${m.label} · $s", (i + f) / ms.size * 0.65f) } }
+            ensureWhisper(WhisperSize.SMALL, isActive) { s, f -> onProgress(s, 0.65f + f * 0.35f) }
             return
         }
         if (liveReady(l)) return
