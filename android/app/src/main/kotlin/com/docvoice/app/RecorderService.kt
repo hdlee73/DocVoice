@@ -19,9 +19,9 @@ import com.docvoice.app.core.PcmBuffer
 import com.docvoice.app.core.Segment
 import com.docvoice.app.core.Storage
 import com.docvoice.app.core.Stt
-import com.docvoice.app.core.SttOptions
+import com.docvoice.app.core.LiveLang
+import com.docvoice.app.core.LiveText
 import com.docvoice.app.core.Wav
-import com.docvoice.app.core.WhisperSize
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -88,53 +88,80 @@ class RecorderService : Service() {
     private suspend fun record() {
         val sr = AudioDecoder.SAMPLE_RATE
         val store = ModelStore(this)
-        val size = runCatching { WhisperSize.valueOf(RecorderHub.sizeKey) }.getOrDefault(WhisperSize.SMALL)
-        val opts = SttOptions(RecorderHub.language, size, false)
+        val lang = LiveLang.of(RecorderHub.language)
         val alive = { scope.isActive && !RecorderHub.stopRequested.get() }
 
         withContext(Dispatchers.IO) {
-            store.ensureVad(alive) { m, f -> prep(m, f) }
-            store.ensureWhisper(size, alive) { m, f -> prep(m, f) }
+            store.ensureLive(lang, alive) { m, f -> prep(m, f) }
         }
         if (RecorderHub.stopRequested.get()) { RecorderHub.reset(); return }
         prep("음성 인식 준비 중", null)
-        val recognizer = Stt.newRecognizer(store, opts)
-        val vad = Stt.newVad(store)
+        val recognizer = Stt.newLive(store, lang)
+        val stream = recognizer.createStream()
 
         val pcm = PcmBuffer(sr * 60 * 5)
         RecorderHub.pcm = pcm
-        val queue = Channel<Speech>(Channel.UNLIMITED)
+        val queue = Channel<FloatArray>(Channel.UNLIMITED)
         val segments = ArrayList<Segment>()
 
+        // 인식 워커: 녹음 스레드와 분리해 오디오가 끊기지 않게 한다.
         val worker = scope.launch(Dispatchers.Default) {
-            for (sp in queue) {
-                val seg = Stt.decodeSegment(recognizer, sp.samples, sp.start) ?: continue
-                segments.add(seg)
-                RecorderHub.upd { copy(segments = segments.toList()) }
+            var fed = 0L
+            var segStart = 0.0
+            var lastEnd = 0.0
+            var active = false
+            fun decodeAll() { while (recognizer.isReady(stream)) recognizer.decode(stream) }
+            fun finalizeSegment(now: Double) {
+                val text = LiveText.format(recognizer.getResult(stream).text, lang.key, true)
+                if (text.isNotEmpty()) {
+                    segments.add(Segment(segStart, maxOf(now, segStart + 0.3), text))
+                    lastEnd = now
+                }
+                recognizer.reset(stream)
+                active = false
+                RecorderHub.upd { copy(segments = segments.toList(), partial = "", speaking = false) }
             }
+            for (chunk in queue) {
+                stream.acceptWaveform(chunk, sr)
+                fed += chunk.size
+                decodeAll()
+                val now = fed / sr.toDouble()
+                val raw = recognizer.getResult(stream).text
+                if (raw.isNotBlank() && !active) { active = true; segStart = maxOf(lastEnd, now - 0.5) }
+                if (recognizer.isEndpoint(stream)) {
+                    finalizeSegment(now)
+                } else {
+                    val part = LiveText.format(raw, lang.key, false)
+                    RecorderHub.upd { copy(partial = part, speaking = part.isNotEmpty()) }
+                }
+            }
+            // 마무리: 남은 꼬리 처리
+            stream.acceptWaveform(FloatArray(sr / 2), sr)
+            stream.inputFinished()
+            decodeAll()
+            finalizeSegment(fed / sr.toDouble())
         }
 
         val minBuf = AudioRecord.getMinBufferSize(sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val rec = AudioRecord(
             MediaRecorder.AudioSource.MIC, sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
-            maxOf(minBuf, sr * 2),
+            maxOf(minBuf, sr * 4),
         )
         if (rec.state != AudioRecord.STATE_INITIALIZED) {
-            rec.release(); vad.release(); queue.close(); worker.cancel(); recognizer.release()
+            rec.release(); queue.close(); worker.cancel(); stream.release(); recognizer.release()
             throw IllegalStateException("마이크를 시작할 수 없습니다.")
         }
         try {
             rec.startRecording()
             RecorderHub.upd { copy(phase = RecPhase.Recording, message = null, fraction = null) }
-            val buf = ShortArray(1600)
+            val buf = ShortArray(1600) // 0.1초
             var lastNotify = 0L
             withContext(Dispatchers.IO) {
                 while (!RecorderHub.stopRequested.get() && scope.isActive) {
                     val n = rec.read(buf, 0, buf.size)
                     if (n <= 0) continue
-                    val paused = RecorderHub.paused.get()
-                    if (paused) {
-                        RecorderHub.upd { copy(phase = RecPhase.Paused, level = 0f, speaking = false) }
+                    if (RecorderHub.paused.get()) {
+                        RecorderHub.upd { copy(phase = RecPhase.Paused, level = 0f) }
                         continue
                     }
                     var sum = 0.0
@@ -144,18 +171,9 @@ class RecorderService : Service() {
                         f[i] = buf[i] / 32768f
                         sum += f[i] * f[i]
                     }
-                    vad.acceptWaveform(f)
-                    while (!vad.empty()) {
-                        val s = vad.front(); vad.pop()
-                        queue.trySend(Speech(s.samples, s.start))
-                    }
+                    queue.trySend(f)
                     val rms = sqrt(sum / n).toFloat()
-                    RecorderHub.upd { copy(
-                        phase = RecPhase.Recording,
-                        seconds = pcm.seconds,
-                        level = (rms * 6f).coerceIn(0f, 1f),
-                        speaking = vad.isSpeechDetected(),
-                    ) }
+                    RecorderHub.upd { copy(phase = RecPhase.Recording, seconds = pcm.seconds, level = (rms * 6f).coerceIn(0f, 1f)) }
                     val now = System.currentTimeMillis()
                     if (now - lastNotify > 1000) {
                         lastNotify = now
@@ -168,15 +186,10 @@ class RecorderService : Service() {
             rec.release()
         }
 
-        RecorderHub.upd { copy(phase = RecPhase.Finishing, message = "마무리 인식 중", level = 0f, speaking = false) }
-        vad.flush()
-        while (!vad.empty()) {
-            val s = vad.front(); vad.pop()
-            queue.trySend(Speech(s.samples, s.start))
-        }
+        RecorderHub.upd { copy(phase = RecPhase.Finishing, message = null, level = 0f) }
         queue.close()
         worker.join()
-        vad.release()
+        stream.release()
         recognizer.release()
 
         // 녹음 원본(WAV) 저장
@@ -186,9 +199,7 @@ class RecorderService : Service() {
             val uri = Storage.saveToDownloads(this@RecorderService, name, Wav.encode(pcm.data, pcm.size))
             OutFile(name, uri, "audio/wav")
         }
-        RecorderHub.upd { copy(
-            phase = RecPhase.Stopped, seconds = pcm.seconds, segments = segments.toList(), wav = wavUri, message = null,
-        ) }
+        RecorderHub.upd { copy(phase = RecPhase.Stopped, seconds = pcm.seconds, segments = segments.toList(), wav = wavUri, message = null) }
     }
 
     private fun prep(msg: String, f: Float?) {

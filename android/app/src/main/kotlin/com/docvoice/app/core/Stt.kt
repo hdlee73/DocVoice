@@ -1,6 +1,12 @@
 package com.docvoice.app.core
 
+import com.k2fsa.sherpa.onnx.EndpointConfig
+import com.k2fsa.sherpa.onnx.EndpointRule
 import com.k2fsa.sherpa.onnx.FastClusteringConfig
+import com.k2fsa.sherpa.onnx.OnlineModelConfig
+import com.k2fsa.sherpa.onnx.OnlineRecognizer
+import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
@@ -116,6 +122,28 @@ object Stt {
                     numThreads = threads,
                     provider = "cpu",
                 ),
+            )
+        )
+    }
+
+    /** 실시간(스트리밍) 인식기. 0.8초 이상 조용하면 한 문장으로 끊는다. */
+    fun newLive(store: ModelStore, lang: LiveLang): OnlineRecognizer {
+        val f = store.live(lang)
+        return OnlineRecognizer(
+            config = OnlineRecognizerConfig(
+                modelConfig = OnlineModelConfig(
+                    transducer = OnlineTransducerModelConfig(encoder = f.encoder.path, decoder = f.decoder.path, joiner = f.joiner.path),
+                    tokens = f.tokens.path,
+                    numThreads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4),
+                    provider = "cpu",
+                ),
+                endpointConfig = EndpointConfig(
+                    rule1 = EndpointRule(false, 2.0f, 0.0f),
+                    rule2 = EndpointRule(true, 0.8f, 0.0f),
+                    rule3 = EndpointRule(false, 0.0f, 15.0f),
+                ),
+                enableEndpoint = true,
+                decodingMethod = "greedy_search",
             )
         )
     }

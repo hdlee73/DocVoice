@@ -161,4 +161,12 @@ class CoreTest {
         assertEquals("WAVE", String(w, 8, 4))
         assertEquals(6, java.nio.ByteBuffer.wrap(w, 40, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN).int)
     }
+
+    @Test fun liveTextFormatting() {
+        assertEquals("Hello I'm tom.", LiveText.format("HELLO I'M TOM", "en", true))
+        assertEquals("I think I can", LiveText.format("I THINK I CAN", "en", false))
+        assertEquals("Is it ok?", LiveText.format("is it ok?", "en", true))
+        assertEquals("안녕하세요.", LiveText.format(" 안녕하세요 ", "ko", true))
+        assertEquals("", LiveText.format("  ", "en", true))
+    }
 }

@@ -36,6 +36,9 @@ sealed interface JobRequest {
     data class RecExport(
         val title: String,
         val format: String,
+        val refine: Boolean,
+        val lang: String,
+        val size: com.docvoice.app.core.WhisperSize,
         val diarize: Boolean,
         val gap: Double,
         val includeTime: Boolean,

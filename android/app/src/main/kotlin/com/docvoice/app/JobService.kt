@@ -142,9 +142,16 @@ class JobService : Service() {
 
     private suspend fun runRecExport(req: JobRequest.RecExport, title: String) {
         val pcm = RecorderHub.pcm ?: throw ExtractException("녹음 데이터가 없습니다.")
-        val segs = RecorderHub.state.value.segments
-        if (segs.isEmpty()) throw ExtractException("인식된 말이 없습니다.")
+        var segs = RecorderHub.state.value.segments
         val store = ModelStore(this)
+        if (req.refine) {
+            val job0 = currentCoroutineContext()[Job]!!
+            val r = withContext(Dispatchers.Default) {
+                Stt.transcribe(store, pcm, com.docvoice.app.core.SttOptions(req.lang, req.size, false), { job0.isActive }) { m, f -> progress(title, m, f) }
+            }
+            if (r.segments.isNotEmpty()) segs = r.segments
+        }
+        if (segs.isEmpty()) throw ExtractException("인식된 말이 없습니다.")
         var turns: List<Triple<Double, Double, Int>> = emptyList()
         var note: String? = null
         if (req.diarize) {

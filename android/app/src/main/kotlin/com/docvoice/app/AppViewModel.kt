@@ -48,7 +48,7 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun save() {
         prefs.edit()
-            .putString("koVoice", koVoice).putString("accent", accent)
+            .putString("koVoice", koVoice).putString("accent", accent).putString("recLang", recLang)
             .putString("enVoiceUs", enVoiceUs).putString("enVoiceUk", enVoiceUk)
             .putFloat("speed", speed)
             .putString("format", format).putString("language", language).putString("size", size.name)
@@ -92,12 +92,13 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     val rec = RecorderHub.state
     var recFormat by mutableStateOf(prefs.getString("recFormat", "docx")!!)
     var recDiarize by mutableStateOf(false)
+    var recRefine by mutableStateOf(false)
+    var recLang by mutableStateOf(prefs.getString("recLang", "en")!!)
 
     fun startRecording() {
         if (RecorderHub.isActive()) return
         RecorderHub.reset()
-        RecorderHub.language = language
-        RecorderHub.sizeKey = size.name
+        RecorderHub.language = recLang
         save()
         ContextCompat.startForegroundService(app, Intent(app, RecorderService::class.java).setAction(RecorderService.ACTION_START))
     }
@@ -117,8 +118,8 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     fun exportRecording() {
         val wav = RecorderHub.state.value.wav
         val title = wav?.name?.let { Storage.baseName(it) } ?: "녹음"
-        prefs.edit().putString("recFormat", recFormat).apply()
-        launch(JobRequest.RecExport(title, recFormat, recDiarize, gap.toDouble(), includeTime, showSpeaker && recDiarize))
+        prefs.edit().putString("recFormat", recFormat).putString("recLang", recLang).apply()
+        launch(JobRequest.RecExport(title, recFormat, recRefine, recLang, size, recDiarize, gap.toDouble(), includeTime, showSpeaker && recDiarize))
     }
 
     val formats get() = Exporter.FORMATS

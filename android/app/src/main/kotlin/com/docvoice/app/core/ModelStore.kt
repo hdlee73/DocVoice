@@ -16,6 +16,16 @@ enum class WhisperSize(val key: String, val label: String, val hint: String) {
     SMALL("small", "정확 (권장)", "small · 약 370MB");
 }
 
+/** 실시간(스트리밍) 인식 언어 */
+enum class LiveLang(val key: String, val label: String, val archive: String) {
+    EN("en", "English", "sherpa-onnx-streaming-zipformer-en-2023-06-26"),
+    KO("ko", "한국어", "sherpa-onnx-streaming-zipformer-korean-2024-06-16");
+
+    companion object {
+        fun of(key: String) = values().firstOrNull { it.key == key } ?: EN
+    }
+}
+
 class ModelException(message: String) : Exception(message)
 
 /** 음성 인식 · VAD · 화자 구분 모델을 앱 저장공간에 내려받아 보관한다 (최초 1회, 이후 오프라인 사용). */
@@ -39,6 +49,60 @@ class ModelStore(context: Context) {
     fun whisper(size: WhisperSize): WhisperFiles {
         val d = File(root, "whisper-${size.key}")
         return WhisperFiles(File(d, "encoder.onnx"), File(d, "decoder.onnx"), File(d, "tokens.txt"))
+    }
+
+    class LiveFiles(val encoder: File, val decoder: File, val joiner: File, val tokens: File)
+
+    fun live(l: LiveLang): LiveFiles {
+        val d = File(root, "live-${l.key}")
+        return LiveFiles(File(d, "encoder.onnx"), File(d, "decoder.onnx"), File(d, "joiner.onnx"), File(d, "tokens.txt"))
+    }
+
+    fun liveReady(l: LiveLang) = live(l).let { it.encoder.exists() && it.decoder.exists() && it.joiner.exists() && it.tokens.exists() }
+
+    /** 스트리밍 모델 압축 파일에서 인코더/디코더/조이너/토큰만 골라 꺼낸다 (int8 우선). */
+    fun ensureLive(l: LiveLang, isActive: () -> Boolean, onProgress: (String, Float) -> Unit) {
+        if (liveReady(l)) return
+        val f = live(l)
+        val dir = f.encoder.parentFile!!
+        dir.mkdirs()
+        val tmp = File(root, "live-${l.key}.tar.bz2")
+        download("$GH/asr-models/${l.archive}.tar.bz2", tmp, isActive) { onProgress("실시간 인식 모델 내려받는 중", it * 0.9f) }
+        onProgress("실시간 인식 모델 준비 중", 0.92f)
+        val best = HashMap<String, Pair<Int, File>>()
+        TarArchiveInputStream(BZip2CompressorInputStream(BufferedInputStream(tmp.inputStream()))).use { tar ->
+            var e = tar.nextTarEntry
+            while (e != null) {
+                if (!e.isDirectory && !e.name.contains("test_wavs")) {
+                    val base = e.name.substringAfterLast('/')
+                    val int8 = base.contains("int8")
+                    val (role, score) = when {
+                        base == "tokens.txt" -> "tokens" to 1
+                        !base.endsWith(".onnx") -> (null to 0)
+                        base.startsWith("encoder") -> "encoder" to (if (int8) 2 else 1)
+                        base.startsWith("joiner") -> "joiner" to (if (int8) 2 else 1)
+                        base.startsWith("decoder") -> "decoder" to (if (int8) 1 else 2)
+                        else -> (null to 0)
+                    }
+                    if (role != null && (best[role]?.first ?: 0) < score) {
+                        val out = File(dir, "$role.cand")
+                        out.outputStream().use { tar.copyTo(it) }
+                        val keep = File(dir, "$role.best")
+                        best[role]?.second?.delete()
+                        out.renameTo(keep)
+                        best[role] = score to keep
+                    }
+                }
+                e = tar.nextTarEntry
+            }
+        }
+        tmp.delete()
+        val map = mapOf("encoder" to f.encoder, "decoder" to f.decoder, "joiner" to f.joiner, "tokens" to f.tokens)
+        for ((role, dest) in map) {
+            val src = best[role]?.second ?: throw ModelException("실시간 인식 모델에서 $role 파일을 찾지 못했습니다.")
+            if (!src.renameTo(dest)) throw ModelException("모델 파일을 저장하지 못했습니다.")
+        }
+        onProgress("실시간 인식 모델 준비 중", 1f)
     }
 
     val vadFile get() = File(root, "silero_vad.onnx")

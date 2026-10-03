@@ -2,9 +2,11 @@ package com.docvoice.app.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -16,42 +18,78 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.UnfoldMore
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.Icon
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+/** 큰 제목 + 오른쪽 아이콘 액션 */
 @Composable
-fun LargeTitle(text: String) {
-    Text(
-        text, fontSize = 34.sp, fontWeight = FontWeight.Bold, color = Ios.Label,
-        modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 4.dp),
-    )
+fun TitleBar(title: String, info: String? = null, actions: @Composable RowScope.() -> Unit = {}) {
+    Row(Modifier.fillMaxWidth().padding(start = 4.dp, top = 10.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Ios.Label, modifier = Modifier.weight(1f))
+        if (info != null) InfoButton(title, info)
+        actions()
+    }
+}
+
+@Composable
+fun InfoButton(title: String, text: String) {
+    var open by remember { mutableStateOf(false) }
+    RoundIcon(Icons.Rounded.Info, Ios.Secondary, 24.dp) { open = true }
+    if (open) {
+        AlertDialog(
+            onDismissRequest = { open = false },
+            containerColor = Ios.Card,
+            title = { Text(title, fontSize = 17.sp, fontWeight = FontWeight.SemiBold) },
+            text = { Text(text, fontSize = 15.sp, color = Ios.Label, lineHeight = 21.sp) },
+            confirmButton = { TextButton(onClick = { open = false }) { Text("확인", color = Ios.Blue, fontWeight = FontWeight.SemiBold) } },
+        )
+    }
+}
+
+/** 배경 없는 둥근 아이콘 버튼 */
+@Composable
+fun RoundIcon(icon: ImageVector, tint: Color = Ios.Blue, iconSize: androidx.compose.ui.unit.Dp = 24.dp, onClick: () -> Unit) {
+    Box(Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
+        Icon(icon, null, tint = tint, modifier = Modifier.size(iconSize))
+    }
+}
+
+/** 채워진 원형 아이콘 버튼 */
+@Composable
+fun CircleIcon(icon: ImageVector, bg: Color, tint: Color, size: androidx.compose.ui.unit.Dp = 48.dp, onClick: () -> Unit) {
+    Box(Modifier.size(size).clip(CircleShape).background(bg).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
+        Icon(icon, null, tint = tint, modifier = Modifier.size(size * 0.5f))
+    }
 }
 
 @Composable
 fun GroupHeader(text: String) {
-    Text(
-        text, fontSize = 13.sp, color = Ios.Secondary, letterSpacing = 0.2.sp,
-        modifier = Modifier.padding(start = 16.dp, top = 10.dp, bottom = 0.dp),
-    )
-}
-
-@Composable
-fun GroupFooter(text: String) {
-    Text(text, fontSize = 13.sp, color = Ios.Secondary, modifier = Modifier.padding(horizontal = 16.dp), lineHeight = 17.sp)
+    Text(text, fontSize = 13.sp, color = Ios.Secondary, modifier = Modifier.padding(start = 16.dp, top = 10.dp))
 }
 
 class GroupScope {
@@ -63,43 +101,69 @@ class GroupScope {
 @Composable
 fun Group(content: GroupScope.() -> Unit) {
     val scope = GroupScope().apply(content)
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Ios.Card)) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Ios.Card)) {
         scope.rows.forEachIndexed { i, r ->
             r()
-            if (i < scope.rows.lastIndex) Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(Ios.Separator))
+            if (i < scope.rows.lastIndex) Box(Modifier.padding(start = 58.dp).fillMaxWidth().height(0.5.dp).background(Ios.Separator))
+        }
+    }
+}
+
+/** 설정 앱처럼 색 둥근 사각형 안의 흰 아이콘 */
+@Composable
+fun IconTile(icon: ImageVector, color: Color) {
+    Box(Modifier.size(30.dp).clip(RoundedCornerShape(7.dp)).background(color), contentAlignment = Alignment.Center) {
+        Icon(icon, null, tint = Color.White, modifier = Modifier.size(18.dp))
+    }
+}
+
+@Composable
+fun RowShell(icon: ImageVector? = null, color: Color = Ios.Blue, onClick: (() -> Unit)? = null, content: @Composable RowScope.() -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 52.dp)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (icon != null) { IconTile(icon, color); Spacer(Modifier.width(14.dp)) }
+        content()
+    }
+}
+
+@Composable
+fun ValueRow(icon: ImageVector, color: Color, title: String, value: String? = null, titleColor: Color = Ios.Label, onClick: (() -> Unit)? = null) {
+    RowShell(icon, color, onClick) {
+        Text(title, fontSize = 17.sp, color = titleColor, modifier = Modifier.weight(1f), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+        if (value != null) { Spacer(Modifier.width(8.dp)); Text(value, fontSize = 15.sp, color = Ios.Secondary, maxLines = 1) }
+    }
+}
+
+/** 눌러서 고르는 메뉴 행 (iOS 풀다운) */
+@Composable
+fun MenuRow(icon: ImageVector, color: Color, title: String, current: String, options: List<Pair<String, String>>, onPick: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        RowShell(icon, color, { open = true }) {
+            Text(title, fontSize = 17.sp, color = Ios.Label, modifier = Modifier.weight(1f))
+            Text(current, fontSize = 17.sp, color = Ios.Secondary, maxLines = 1)
+            Spacer(Modifier.width(4.dp))
+            Icon(Icons.Rounded.UnfoldMore, null, tint = Ios.Tertiary, modifier = Modifier.size(18.dp))
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }, containerColor = Ios.Card) {
+            options.forEach { (label, id) ->
+                DropdownMenuItem(
+                    text = { Text(label, fontSize = 16.sp) },
+                    trailingIcon = { if (label == current) Icon(Icons.Rounded.Check, null, tint = Ios.Blue, modifier = Modifier.size(18.dp)) },
+                    onClick = { open = false; onPick(id) },
+                )
+            }
         }
     }
 }
 
 @Composable
-fun RowShell(onClick: (() -> Unit)? = null, content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 46.dp)
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) { content() }
-}
-
-@Composable
-fun ValueRow(title: String, value: String?, onClick: (() -> Unit)? = null, valueColor: Color = Ios.Secondary, titleColor: Color = Ios.Label) {
-    RowShell(onClick) {
-        Text(title, fontSize = 17.sp, color = titleColor, modifier = Modifier.weight(1f))
-        if (value != null) Text(value, fontSize = 17.sp, color = valueColor, maxLines = 1)
-    }
-}
-
-@Composable
-fun CheckRow(title: String, checked: Boolean, onClick: () -> Unit) {
-    RowShell(onClick) {
-        Text(title, fontSize = 17.sp, color = Ios.Label, modifier = Modifier.weight(1f))
-        if (checked) Icon(Icons.Rounded.Check, null, tint = Ios.Blue, modifier = Modifier.size(22.dp))
-    }
-}
-
-@Composable
-fun ToggleRow(title: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    RowShell {
+fun ToggleRow(icon: ImageVector, color: Color, title: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    RowShell(icon, color) {
         Text(title, fontSize = 17.sp, color = Ios.Label, modifier = Modifier.weight(1f))
         Switch(
             checked = checked, onCheckedChange = onChange,
@@ -138,54 +202,32 @@ fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-fun SliderRow(title: String, valueText: String, value: Float, range: ClosedFloatingPointRange<Float>, steps: Int, onChange: (Float) -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-        Row(Modifier.fillMaxWidth()) {
-            Text(title, fontSize = 17.sp, color = Ios.Label, modifier = Modifier.weight(1f))
-            Text(valueText, fontSize = 17.sp, color = Ios.Secondary)
-        }
+fun SliderRow(icon: ImageVector, color: Color, valueText: String, value: Float, range: ClosedFloatingPointRange<Float>, steps: Int, onChange: (Float) -> Unit) {
+    RowShell(icon, color) {
         Slider(
             value = value, onValueChange = onChange, valueRange = range, steps = steps,
+            modifier = Modifier.weight(1f),
             thumb = { Box(Modifier.size(26.dp).shadow(3.dp, CircleShape).background(Color.White, CircleShape)) },
             colors = SliderDefaults.colors(
                 activeTrackColor = Ios.Blue, inactiveTrackColor = Ios.Fill,
                 activeTickColor = Color.Transparent, inactiveTickColor = Color.Transparent,
             ),
         )
+        Spacer(Modifier.width(10.dp))
+        Text(valueText, fontSize = 15.sp, color = Ios.Secondary, modifier = Modifier.width(48.dp), textAlign = TextAlign.End)
     }
 }
 
 @Composable
-fun FilledButton(text: String, enabled: Boolean = true, color: Color = Ios.Blue, onClick: () -> Unit) {
-    Box(
-        Modifier.fillMaxWidth().height(52.dp).clip(RoundedCornerShape(14.dp))
+fun FilledButton(text: String, icon: ImageVector? = null, enabled: Boolean = true, color: Color = Ios.Blue, modifier: Modifier = Modifier.fillMaxWidth(), onClick: () -> Unit) {
+    Row(
+        modifier.height(52.dp).clip(RoundedCornerShape(14.dp))
             .background(if (enabled) color else Ios.Fill)
             .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
-        contentAlignment = Alignment.Center,
+        horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = if (enabled) Color.White else Ios.Tertiary)
+        val c = if (enabled) Color.White else Ios.Tertiary
+        if (icon != null) { Icon(icon, null, tint = c, modifier = Modifier.size(22.dp)); Spacer(Modifier.width(8.dp)) }
+        Text(text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = c)
     }
 }
-
-@Composable
-fun TintedButton(text: String, color: Color = Ios.Blue, onClick: () -> Unit) {
-    Box(
-        Modifier.clip(RoundedCornerShape(50)).background(color.copy(alpha = 0.12f)).clickable(onClick = onClick)
-            .padding(horizontal = 18.dp, vertical = 8.dp),
-    ) { Text(text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = color) }
-}
-
-@Composable
-fun TextAction(text: String, color: Color = Ios.Blue, onClick: () -> Unit) {
-    Text(
-        text, fontSize = 17.sp, color = color, textAlign = TextAlign.Center,
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 12.dp),
-    )
-}
-
-@Composable
-fun Gap(h: Int = 12) = Spacer(Modifier.height(h.dp))
-
-@Composable
-fun HGap(w: Int = 8) = Spacer(Modifier.width(w.dp))
-

@@ -15,6 +15,7 @@ data class RecState(
     val level: Float = 0f,
     val segments: List<Segment> = emptyList(),
     val speaking: Boolean = false,
+    val partial: String = "",
     val message: String? = null,
     val fraction: Float? = null,
     val wav: OutFile? = null,
@@ -26,8 +27,7 @@ object RecorderHub {
 
     @Volatile var pcm: PcmBuffer? = null
     @Volatile var job: Job? = null
-    @Volatile var language: String = ""
-    @Volatile var sizeKey: String = "SMALL"
+    @Volatile var language: String = "en"
     val stopRequested = AtomicBoolean(false)
     val paused = AtomicBoolean(false)
 
