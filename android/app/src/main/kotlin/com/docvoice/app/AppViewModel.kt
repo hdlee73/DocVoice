@@ -10,6 +10,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.docvoice.app.core.Wav
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.docvoice.app.core.Exporter
 import com.docvoice.app.core.Storage
 import com.docvoice.app.core.SttOptions
@@ -21,7 +26,7 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
 
     val job = JobHub.state
 
-    var tab by mutableIntStateOf(0)
+    var tab by mutableIntStateOf(0) // 0 문서→MP3, 1 MP3→문서, 2 녹음 & 문서화
 
     // 문서 → 음성
     var ttsFile by mutableStateOf<Storage.Picked?>(null)
@@ -111,13 +116,33 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
         app.startService(Intent(app, RecorderService::class.java).setAction(RecorderService.ACTION_STOP))
     }
 
+    /** 저장하지 않고 닫기 */
     fun newRecording() {
         if (!RecorderHub.isActive()) RecorderHub.reset()
     }
 
+    /** 지금 녹음을 버리고 바로 다시 녹음 */
+    fun restartRecording() {
+        if (RecorderHub.isActive()) return
+        startRecording()
+    }
+
+    /** 녹음 원본을 WAV 로 저장 (원할 때만) */
+    fun saveRecordingFile() {
+        val pcm = RecorderHub.pcm ?: return
+        val name = (RecorderHub.state.value.title.ifBlank { "녹음" }) + ".wav"
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val uri = Storage.saveToDownloads(app, name, Wav.encode(pcm.data, pcm.size))
+                RecorderHub.upd { copy(wav = OutFile(name, uri, "audio/wav")) }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { android.widget.Toast.makeText(app, "저장하지 못했어요.", android.widget.Toast.LENGTH_SHORT).show() }
+            }
+        }
+    }
+
     fun exportRecording() {
-        val wav = RecorderHub.state.value.wav
-        val title = wav?.name?.let { Storage.baseName(it) } ?: "녹음"
+        val title = RecorderHub.state.value.title.ifBlank { "녹음" }
         prefs.edit().putString("recFormat", recFormat).putString("recLang", recLang).apply()
         launch(JobRequest.RecExport(title, recFormat, recRefine, recLang, size, recDiarize, gap.toDouble(), includeTime, showSpeaker && recDiarize))
     }

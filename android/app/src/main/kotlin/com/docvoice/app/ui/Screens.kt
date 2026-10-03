@@ -44,7 +44,7 @@ import androidx.compose.material.icons.rounded.People
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Schedule
-import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Translate
@@ -93,13 +93,13 @@ import java.util.Locale
 fun DocVoiceApp(vm: AppViewModel) {
     Column(Modifier.fillMaxSize().background(Ios.Bg)) {
         Box(Modifier.weight(1f).fillMaxWidth().statusBarsPadding()) {
-            if (vm.tab == 0) {
+            if (vm.tab == 2) {
                 Column(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { RecordScreen(vm) }
             } else {
                 Column(
                     Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 24.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) { if (vm.tab == 1) TtsScreen(vm) else SttScreen(vm) }
+                ) { if (vm.tab == 0) TtsScreen(vm) else SttScreen(vm) }
             }
         }
         TabBar(vm.tab) { vm.tab = it }
@@ -111,9 +111,9 @@ private fun TabBar(selected: Int, onSelect: (Int) -> Unit) {
     Column(Modifier.fillMaxWidth().background(Color(0xFFF9F9F9))) {
         Box(Modifier.fillMaxWidth().height(0.5.dp).background(Ios.Separator))
         Row(Modifier.fillMaxWidth().navigationBarsPadding().height(54.dp)) {
-            TabItem(Icons.Rounded.Mic, "녹음", selected == 0) { onSelect(0) }
-            TabItem(Icons.Rounded.VolumeUp, "읽어주기", selected == 1) { onSelect(1) }
-            TabItem(Icons.Rounded.Description, "받아쓰기", selected == 2) { onSelect(2) }
+            TabItem(Icons.Rounded.VolumeUp, "문서 → MP3", selected == 0) { onSelect(0) }
+            TabItem(Icons.Rounded.Description, "MP3 → 문서", selected == 1) { onSelect(1) }
+            TabItem(Icons.Rounded.Mic, "녹음 & 문서화", selected == 2) { onSelect(2) }
         }
     }
 }
@@ -172,8 +172,7 @@ private fun androidx.compose.foundation.layout.ColumnScope.RecordScreen(vm: AppV
     val stopped = rec.phase == RecPhase.Stopped
     val idle = rec.phase == RecPhase.Idle || rec.phase == RecPhase.Failed
 
-    TitleBar("녹음") {
-        if (idle) LangPill(vm)
+    TitleBar("녹음 & 문서화") {
         if (stopped) RoundIcon(Icons.Rounded.Tune, Ios.Blue) { sheet = true }
     }
     JobPanel(vm)
@@ -183,10 +182,29 @@ private fun androidx.compose.foundation.layout.ColumnScope.RecordScreen(vm: AppV
     LaunchedEffect(rec.segments.size, rec.partial) { scroll.animateScrollTo(scroll.maxValue) }
     Box(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Ios.Card)) {
         if (rec.segments.isEmpty() && rec.partial.isEmpty()) {
-            Icon(
-                if (busy) Icons.Rounded.GraphicEq else Icons.Rounded.Mic, null, tint = Ios.Fill,
-                modifier = Modifier.align(Alignment.Center).size(88.dp),
-            )
+            Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                Icon(
+                    when {
+                        stopped -> Icons.Rounded.ErrorOutline
+                        busy -> Icons.Rounded.GraphicEq
+                        else -> Icons.Rounded.Mic
+                    },
+                    null, tint = Ios.Fill, modifier = Modifier.size(88.dp),
+                )
+                if (stopped) {
+                    Text(
+                        rec.message ?: if (rec.peak < 0.01f) "마이크 소리가 들어오지 않았어요" else "인식된 말이 없어요",
+                        fontSize = 15.sp, color = Ios.Secondary,
+                    )
+                }
+                if (idle) {
+                    Box(Modifier.width(220.dp)) {
+                        Segmented(LiveLang.values().map { it.label }, LiveLang.values().indexOfFirst { it.key == vm.recLang }.coerceAtLeast(0)) {
+                            vm.recLang = LiveLang.values()[it].key; vm.save()
+                        }
+                    }
+                }
+            }
         }
         Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             rec.segments.forEach { seg ->
@@ -223,13 +241,15 @@ private fun androidx.compose.foundation.layout.ColumnScope.RecordScreen(vm: AppV
         } else {
             val formats = listOf("docx", "pdf", "xlsx", "txt")
             Segmented(formats.map { it.uppercase(Locale.ROOT) }, formats.indexOf(vm.recFormat).coerceAtLeast(0)) { vm.recFormat = formats[it] }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                rec.wav?.let { w ->
-                    CircleIcon(Icons.Rounded.PlayArrow, Ios.Fill, Ios.Label, 52.dp) { openFile(ctx, w) }
-                    CircleIcon(Icons.Rounded.IosShare, Ios.Fill, Ios.Label, 52.dp) { shareFile(ctx, w) }
+            FilledButton("문서로 내보내기", Icons.Rounded.Description, enabled = rec.segments.isNotEmpty()) { vm.exportRecording() }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                LabeledAction(Icons.Rounded.Close, "닫기", Ios.Label) { vm.newRecording() }
+                LabeledAction(Icons.Rounded.Mic, "다시 녹음", Ios.Red) { vm.newRecording(); start() }
+                if (rec.wav == null) LabeledAction(Icons.Rounded.Save, "파일 저장", Ios.Label) { vm.saveRecordingFile() }
+                else {
+                    LabeledAction(Icons.Rounded.PlayArrow, "재생", Ios.Label) { openFile(ctx, rec.wav!!) }
+                    LabeledAction(Icons.Rounded.IosShare, "공유", Ios.Label) { shareFile(ctx, rec.wav!!) }
                 }
-                CircleIcon(Icons.Rounded.Add, Ios.Fill, Ios.Red, 52.dp) { vm.newRecording() }
-                FilledButton("내보내기", Icons.Rounded.Description, enabled = rec.segments.isNotEmpty(), modifier = Modifier.weight(1f)) { vm.exportRecording() }
             }
         }
     }
@@ -237,36 +257,24 @@ private fun androidx.compose.foundation.layout.ColumnScope.RecordScreen(vm: AppV
     if (sheet) SettingsSheet({ sheet = false }) {
         TitleBar("내보내기 설정", "• 정밀 재인식: 녹음이 끝난 뒤 더 정확한 모델로 처음부터 다시 받아써서 문서에 담아요. (시간이 더 걸려요)\n• 화자 구분: 누가 말했는지 나눠 줄을 바꿔요.\n• 줄바꿈 간격: 발언 사이가 이 시간보다 길면 줄을 바꿔요.")
         Group {
-            row { ToggleRow(Icons.Rounded.AutoAwesome, Ios.Purple, "정밀 재인식", vm.recRefine) { vm.recRefine = it } }
+            row { ToggleRow(Icons.Rounded.AutoAwesome, Ios.Blue, "정밀 재인식", vm.recRefine) { vm.recRefine = it } }
             if (vm.recRefine) row { SegmentedRow(WhisperSize.values().map { it.label }, vm.size.ordinal) { vm.size = WhisperSize.values()[it]; vm.save() } }
-            row { ToggleRow(Icons.Rounded.People, Ios.Orange, "화자 구분", vm.recDiarize) { vm.recDiarize = it } }
-            if (vm.recDiarize) row { ToggleRow(Icons.Rounded.RecordVoiceOver, Ios.Teal, "화자 표시", vm.showSpeaker) { vm.showSpeaker = it; vm.save() } }
+            row { ToggleRow(Icons.Rounded.People, Ios.Blue, "화자 구분", vm.recDiarize) { vm.recDiarize = it } }
+            if (vm.recDiarize) row { ToggleRow(Icons.Rounded.RecordVoiceOver, Ios.Blue, "화자 표시", vm.showSpeaker) { vm.showSpeaker = it; vm.save() } }
             row { ToggleRow(Icons.Rounded.Schedule, Ios.Blue, "시간 표시", vm.includeTime) { vm.includeTime = it; vm.save() } }
-            row { SliderRow(Icons.Rounded.Subject, Ios.Indigo, String.format(Locale.US, "%.1f초", vm.gap), vm.gap, 0.5f..4f, 6) { vm.gap = Math.round(it * 10) / 10f; vm.save() } }
+            row { SliderRow(Icons.Rounded.Subject, Ios.Blue, String.format(Locale.US, "%.1f초", vm.gap), vm.gap, 0.5f..4f, 6) { vm.gap = Math.round(it * 10) / 10f; vm.save() } }
         }
     }
 }
 
-/** 상단의 언어 선택 알약 (영어 / 한국어) */
 @Composable
-private fun LangPill(vm: AppViewModel) {
-    val opts = LiveLang.values().map { it.label to it.key }
-    var open by remember { mutableStateOf(false) }
-    Box {
-        Row(
-            Modifier.clip(RoundedCornerShape(50)).background(Ios.Blue.copy(alpha = 0.12f)).clickable { open = true }
-                .padding(horizontal = 12.dp, vertical = 7.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Rounded.Translate, null, tint = Ios.Blue, modifier = Modifier.size(16.dp))
-            Spacer(Modifier.width(6.dp))
-            Text(LiveLang.of(vm.recLang).label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Ios.Blue)
-        }
-        androidx.compose.material3.DropdownMenu(expanded = open, onDismissRequest = { open = false }, containerColor = Ios.Card) {
-            opts.forEach { (label, key) ->
-                androidx.compose.material3.DropdownMenuItem(text = { Text(label) }, onClick = { open = false; vm.recLang = key; vm.save() })
-            }
-        }
+private fun LabeledAction(icon: ImageVector, label: String, tint: Color, onClick: () -> Unit) {
+    Column(
+        Modifier.clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(icon, null, tint = tint, modifier = Modifier.size(24.dp))
+        Text(label, fontSize = 11.sp, color = Ios.Secondary)
     }
 }
 
@@ -279,7 +287,7 @@ private fun LevelBars(level: Float, active: Boolean) {
     }
     Row(Modifier.height(32.dp), horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
         history.forEach { v ->
-            Box(Modifier.width(3.dp).height((4 + 26 * v).dp).clip(CircleShape).background(if (active) Ios.Red.copy(alpha = 0.85f) else Ios.Tertiary))
+            Box(Modifier.width(3.dp).height((4 + 26 * v).dp).clip(CircleShape).background(if (active) Ios.Blue else Ios.Tertiary))
         }
     }
 }
@@ -303,7 +311,7 @@ private fun TtsScreen(vm: AppViewModel) {
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let(vm::pickDoc) }
 
     TitleBar(
-        "읽어주기",
+        "문서 → MP3",
         "문서를 자연스러운 남성 목소리 MP3로 만들어요.\n\n지원 형식: ${Extractors.SUPPORTED.joinToString(", ")}\n\nMicrosoft 신경망 음성을 쓰므로 인터넷 연결이 필요해요. 결과는 다운로드/DocVoice 폴더에 저장돼요.",
     )
     JobPanel(vm)
@@ -318,19 +326,19 @@ private fun TtsScreen(vm: AppViewModel) {
     }
     Group {
         row {
-            MenuRow(Icons.Rounded.RecordVoiceOver, Ios.Orange, "한국어", TtsVoices.KO.entries.firstOrNull { it.value == vm.koVoice }?.key ?: "", TtsVoices.KO.map { it.key to it.value }) {
+            MenuRow(Icons.Rounded.RecordVoiceOver, Ios.Blue, "한국어", TtsVoices.KO.entries.firstOrNull { it.value == vm.koVoice }?.key ?: "", TtsVoices.KO.map { it.key to it.value }) {
                 vm.koVoice = it; vm.save()
             }
         }
         row { SegmentedRow(listOf("미국식", "영국식"), if (vm.accent == "uk") 1 else 0) { vm.accent = if (it == 1) "uk" else "us"; vm.save() } }
         row {
             val list = if (vm.accent == "uk") TtsVoices.EN_UK else TtsVoices.EN_US
-            MenuRow(Icons.Rounded.Translate, Ios.Green, "English", list.entries.firstOrNull { it.value == vm.enVoice }?.key ?: "", list.map { it.key to it.value }) {
+            MenuRow(Icons.Rounded.Translate, Ios.Blue, "English", list.entries.firstOrNull { it.value == vm.enVoice }?.key ?: "", list.map { it.key to it.value }) {
                 if (vm.accent == "uk") vm.enVoiceUk = it else vm.enVoiceUs = it
                 vm.save()
             }
         }
-        row { SliderRow(Icons.Rounded.Speed, Ios.Purple, String.format(Locale.US, "%.1f×", vm.speed), vm.speed, 0.7f..1.5f, 7) { vm.speed = Math.round(it * 10) / 10f; vm.save() } }
+        row { SliderRow(Icons.Rounded.Speed, Ios.Blue, String.format(Locale.US, "%.1f×", vm.speed), vm.speed, 0.7f..1.5f, 7) { vm.speed = Math.round(it * 10) / 10f; vm.save() } }
     }
     FilledButton("MP3 만들기", Icons.Rounded.VolumeUp, enabled = vm.ttsFile != null && !busy) { vm.startTts() }
 }
@@ -344,7 +352,7 @@ private fun SttScreen(vm: AppViewModel) {
     var sheet by remember { mutableStateOf(false) }
 
     TitleBar(
-        "받아쓰기",
+        "MP3 → 문서",
         "음성 파일(mp3, m4a, wav, mp4 등)을 문서로 바꿔요.\n\n• XLSX: 한 문장이 한 행에 들어가요. 영어는 단어 3개 이상일 때만 한 문장으로 쳐요.\n• DOCX · PDF · TXT: 화자가 바뀌거나 발언 간격이 길면 줄을 바꿔요.\n\n인식은 휴대폰 안에서 이뤄져요. 처음 한 번만 모델을 내려받고, 화면을 꺼도 계속돼요.",
     ) { RoundIcon(Icons.Rounded.Tune, Ios.Blue) { sheet = true } }
     JobPanel(vm)
@@ -352,14 +360,14 @@ private fun SttScreen(vm: AppViewModel) {
     Group {
         row {
             ValueRow(
-                Icons.Rounded.GraphicEq, Ios.Red, vm.sttFile?.name ?: "음성 선택", vm.sttFile?.size?.takeIf { it >= 0 }?.let(::humanSize),
+                Icons.Rounded.GraphicEq, Ios.Blue, vm.sttFile?.name ?: "음성 선택", vm.sttFile?.size?.takeIf { it >= 0 }?.let(::humanSize),
                 titleColor = if (vm.sttFile == null) Ios.Blue else Ios.Label,
             ) { picker.launch(arrayOf("audio/*", "video/*")) }
         }
     }
     Group {
         row { SegmentedRow(vm.formats.map { it.uppercase(Locale.ROOT) }, vm.formats.indexOf(vm.format).coerceAtLeast(0)) { vm.format = vm.formats[it]; vm.save() } }
-        row { ToggleRow(Icons.Rounded.People, Ios.Orange, "화자 구분", vm.diarize) { vm.diarize = it; vm.save() } }
+        row { ToggleRow(Icons.Rounded.People, Ios.Blue, "화자 구분", vm.diarize) { vm.diarize = it; vm.save() } }
         row { ToggleRow(Icons.Rounded.Schedule, Ios.Blue, "시간 표시", vm.includeTime) { vm.includeTime = it; vm.save() } }
     }
     FilledButton("문서로 변환", Icons.Rounded.Description, enabled = vm.sttFile != null && !busy) { vm.startStt() }
@@ -369,8 +377,8 @@ private fun SttScreen(vm: AppViewModel) {
         Group {
             row { SegmentedRow(listOf("자동", "한국어", "영어"), listOf("", "ko", "en").indexOf(vm.language).coerceAtLeast(0)) { vm.language = listOf("", "ko", "en")[it]; vm.save() } }
             row { SegmentedRow(WhisperSize.values().map { it.label }, vm.size.ordinal) { vm.size = WhisperSize.values()[it]; vm.save() } }
-            if (vm.diarize) row { ToggleRow(Icons.Rounded.RecordVoiceOver, Ios.Teal, "화자 표시", vm.showSpeaker) { vm.showSpeaker = it; vm.save() } }
-            row { SliderRow(Icons.Rounded.Subject, Ios.Indigo, String.format(Locale.US, "%.1f초", vm.gap), vm.gap, 0.5f..4f, 6) { vm.gap = Math.round(it * 10) / 10f; vm.save() } }
+            if (vm.diarize) row { ToggleRow(Icons.Rounded.RecordVoiceOver, Ios.Blue, "화자 표시", vm.showSpeaker) { vm.showSpeaker = it; vm.save() } }
+            row { SliderRow(Icons.Rounded.Subject, Ios.Blue, String.format(Locale.US, "%.1f초", vm.gap), vm.gap, 0.5f..4f, 6) { vm.gap = Math.round(it * 10) / 10f; vm.save() } }
         }
     }
 }
@@ -398,7 +406,7 @@ private fun JobPanel(vm: AppViewModel) {
         ) {
             s.files.forEach { f ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Rounded.CheckCircle, null, tint = Ios.Green, modifier = Modifier.size(22.dp))
+                    Icon(Icons.Rounded.CheckCircle, null, tint = Ios.Blue, modifier = Modifier.size(22.dp))
                     Spacer(Modifier.width(10.dp))
                     Text(f.name, fontSize = 15.sp, color = Ios.Label, modifier = Modifier.weight(1f), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                     RoundIcon(if (f.mime.startsWith("audio")) Icons.Rounded.PlayArrow else Icons.Rounded.OpenInNew, Ios.Blue) { openFile(ctx, f) }

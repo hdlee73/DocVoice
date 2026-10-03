@@ -19,6 +19,8 @@ data class RecState(
     val message: String? = null,
     val fraction: Float? = null,
     val wav: OutFile? = null,
+    val peak: Float = 0f,
+    val title: String = "",
 )
 
 /** 녹음 서비스와 화면이 공유하는 상태. 녹음이 끝나면 pcm/segments 가 내보내기에 쓰인다. */

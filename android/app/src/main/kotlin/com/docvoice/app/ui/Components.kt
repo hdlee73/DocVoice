@@ -104,17 +104,15 @@ fun Group(content: GroupScope.() -> Unit) {
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Ios.Card)) {
         scope.rows.forEachIndexed { i, r ->
             r()
-            if (i < scope.rows.lastIndex) Box(Modifier.padding(start = 58.dp).fillMaxWidth().height(0.5.dp).background(Ios.Separator))
+            if (i < scope.rows.lastIndex) Box(Modifier.padding(start = 52.dp).fillMaxWidth().height(0.5.dp).background(Ios.Separator))
         }
     }
 }
 
-/** 설정 앱처럼 색 둥근 사각형 안의 흰 아이콘 */
+/** 행 앞의 단색(파랑) 아이콘 */
 @Composable
 fun IconTile(icon: ImageVector, color: Color) {
-    Box(Modifier.size(30.dp).clip(RoundedCornerShape(7.dp)).background(color), contentAlignment = Alignment.Center) {
-        Icon(icon, null, tint = Color.White, modifier = Modifier.size(18.dp))
-    }
+    Icon(icon, null, tint = Ios.Blue, modifier = Modifier.size(24.dp))
 }
 
 @Composable
@@ -168,7 +166,7 @@ fun ToggleRow(icon: ImageVector, color: Color, title: String, checked: Boolean, 
         Switch(
             checked = checked, onCheckedChange = onChange,
             colors = SwitchDefaults.colors(
-                checkedTrackColor = Ios.Green, checkedThumbColor = Color.White, checkedBorderColor = Ios.Green,
+                checkedTrackColor = Ios.Blue, checkedThumbColor = Color.White, checkedBorderColor = Ios.Blue,
                 uncheckedTrackColor = Color(0xFFE9E9EA), uncheckedThumbColor = Color.White, uncheckedBorderColor = Color(0xFFE9E9EA),
             ),
         )

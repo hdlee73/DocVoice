@@ -21,7 +21,6 @@ import com.docvoice.app.core.Storage
 import com.docvoice.app.core.Stt
 import com.docvoice.app.core.LiveLang
 import com.docvoice.app.core.LiveText
-import com.docvoice.app.core.Wav
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -105,7 +104,9 @@ class RecorderService : Service() {
         val segments = ArrayList<Segment>()
 
         // 인식 워커: 녹음 스레드와 분리해 오디오가 끊기지 않게 한다.
+        var workerError: String? = null
         val worker = scope.launch(Dispatchers.Default) {
+          try {
             var fed = 0L
             var segStart = 0.0
             var lastEnd = 0.0
@@ -140,6 +141,12 @@ class RecorderService : Service() {
             stream.inputFinished()
             decodeAll()
             finalizeSegment(fed / sr.toDouble())
+          } catch (e: CancellationException) {
+            throw e
+          } catch (e: Throwable) {
+            workerError = "인식 오류: ${e.message ?: e.javaClass.simpleName}"
+            for (ignored in queue) { }
+          }
         }
 
         val minBuf = AudioRecord.getMinBufferSize(sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
@@ -147,6 +154,13 @@ class RecorderService : Service() {
             MediaRecorder.AudioSource.MIC, sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
             maxOf(minBuf, sr * 4),
         )
+        // 블루투스 이어폰이 연결돼 있어도 휴대폰 내장 마이크로 녹음 (블루투스 입력은 무음이 되기 쉬움)
+        try {
+            val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+            am.getDevices(android.media.AudioManager.GET_DEVICES_INPUTS)
+                .firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_MIC }
+                ?.let { rec.preferredDevice = it }
+        } catch (_: Exception) {}
         if (rec.state != AudioRecord.STATE_INITIALIZED) {
             rec.release(); queue.close(); worker.cancel(); stream.release(); recognizer.release()
             throw IllegalStateException("마이크를 시작할 수 없습니다.")
@@ -156,6 +170,7 @@ class RecorderService : Service() {
             RecorderHub.upd { copy(phase = RecPhase.Recording, message = null, fraction = null) }
             val buf = ShortArray(1600) // 0.1초
             var lastNotify = 0L
+            var peak = 0f
             withContext(Dispatchers.IO) {
                 while (!RecorderHub.stopRequested.get() && scope.isActive) {
                     val n = rec.read(buf, 0, buf.size)
@@ -170,10 +185,12 @@ class RecorderService : Service() {
                         pcm.add(buf[i])
                         f[i] = buf[i] / 32768f
                         sum += f[i] * f[i]
+                        val a = kotlin.math.abs(f[i])
+                        if (a > peak) peak = a
                     }
                     queue.trySend(f)
                     val rms = sqrt(sum / n).toFloat()
-                    RecorderHub.upd { copy(phase = RecPhase.Recording, seconds = pcm.seconds, level = (rms * 6f).coerceIn(0f, 1f)) }
+                    RecorderHub.upd { copy(phase = RecPhase.Recording, seconds = pcm.seconds, level = (rms * 6f).coerceIn(0f, 1f), peak = peak) }
                     val now = System.currentTimeMillis()
                     if (now - lastNotify > 1000) {
                         lastNotify = now
@@ -192,14 +209,8 @@ class RecorderService : Service() {
         stream.release()
         recognizer.release()
 
-        // 녹음 원본(WAV) 저장
-        val wavUri = withContext(Dispatchers.IO) {
-            val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
-            val name = "녹음_$stamp.wav"
-            val uri = Storage.saveToDownloads(this@RecorderService, name, Wav.encode(pcm.data, pcm.size))
-            OutFile(name, uri, "audio/wav")
-        }
-        RecorderHub.upd { copy(phase = RecPhase.Stopped, seconds = pcm.seconds, segments = segments.toList(), wav = wavUri, message = null) }
+        val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+        RecorderHub.upd { copy(phase = RecPhase.Stopped, seconds = pcm.seconds, segments = segments.toList(), wav = null, message = workerError, title = "녹음_$stamp") }
     }
 
     private fun prep(msg: String, f: Float?) {
