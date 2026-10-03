@@ -215,7 +215,7 @@ private fun androidx.compose.foundation.layout.ColumnScope.RecordScreen(vm: AppV
                 }
             }
         }
-        Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        if (rec.segments.isNotEmpty() || rec.partial.isNotEmpty()) Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             rec.segments.forEach { seg ->
                 Column {
                     Text(clock(seg.start), fontSize = 11.sp, color = Ios.Tertiary)
